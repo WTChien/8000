@@ -1,0 +1,102 @@
+{
+  "info": {
+    "_postman_id": "fundthepitch-api-collection",
+    "name": "FundThePitch API",
+    "description": "FundThePitch - 專題模擬投資評分系統 API 集合",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "Get All Projects",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/projects",
+              "host": ["{{base_url}}"],
+              "path": ["api", "projects"]
+            },
+            "description": "獲取所有專題列表與當前投資金額"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Investment",
+      "item": [
+        {
+          "name": "Submit Investment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"investments\": {\n    \"proj_001\": 2500,\n    \"proj_002\": 2500,\n    \"proj_003\": 2500,\n    \"proj_004\": 2500\n  },\n  \"judge_id\": \"judge_001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/submit_investment",
+              "host": ["{{base_url}}"],
+              "path": ["api", "submit_investment"]
+            },
+            "description": "提交投資分配\n\n規則：\n- 總金額必須 = 10000 元\n- 每個專題金額 > 0\n- 必須包含所有專題"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Judges",
+      "item": [
+        {
+          "name": "Get Judges",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/judges",
+              "host": ["{{base_url}}"],
+              "path": ["api", "judges"]
+            },
+            "description": "獲取評審列表與投票狀態"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"],
+              "path": [""]
+            },
+            "description": "檢查 API 健康狀態"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ]
+}
