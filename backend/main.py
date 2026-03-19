@@ -17,20 +17,6 @@ def initialize_startup_state() -> None:
     db.seed_if_empty(DEFAULT_PROJECTS, DEFAULT_JUDGES)
     initialize_venue_projects()
 
-    access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    for admin_identifier in ADMIN_IDENTIFIERS:
-        try:
-            normalized, _ = detect_identifier_type(admin_identifier)
-            upsert_verified_user(normalized, "系統管理員", "admin", access_until)
-        except HTTPException:
-            continue
-
-    for admin_name in ADMIN_DISPLAY_NAMES:
-        normalized_name = " ".join(admin_name.strip().split())
-        if not normalized_name:
-            continue
-        upsert_verified_user(build_name_identifier(normalized_name), normalized_name, "admin", access_until)
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -61,22 +47,7 @@ DEFAULT_JUDGES = [
     {"id": "judge_003", "name": "評審 C", "is_voted": False, "assigned_venue_id": None},
 ]
 
-DEFAULT_VENUES = [
-    {"id": "venue_a", "name": "A 會場", "classroom": "資管館 R401"},
-    {"id": "venue_b", "name": "B 會場", "classroom": "資管館 R402"},
-]
-
-ADMIN_IDENTIFIERS = {
-    value.strip()
-    for value in os.getenv("ADMIN_IDENTIFIERS", "0987813427").split(",")
-    if value.strip()
-}
-
-ADMIN_DISPLAY_NAMES = {
-    value.strip()
-    for value in os.getenv("ADMIN_DISPLAY_NAMES", "管理員").split(",")
-    if value.strip()
-}
+DEFAULT_VENUES: List[dict] = []
 
 projects = [dict(project) for project in DEFAULT_PROJECTS]
 judges = [dict(judge) for judge in DEFAULT_JUDGES]
@@ -86,6 +57,9 @@ auth_sessions: Dict[str, dict] = {}
 verification_code_store: Dict[str, dict] = {}
 venue_projects: Dict[str, List[dict]] = {}
 venue_judge_investments: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+campaign_history: List[dict] = []
+current_campaign: Optional[dict] = None
 
 DEV_BYPASS_VERIFICATION = os.getenv("DEV_BYPASS_VERIFICATION", "true").lower() == "true"
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "48"))
@@ -127,6 +101,7 @@ class SessionUser(BaseModel):
     display_name: str
     identifier: str
     venue_id: Optional[str] = None
+    campaign_year: Optional[int] = None
 
 
 class AuthResponse(BaseModel):
@@ -223,6 +198,39 @@ class JudgeStatusResponse(BaseModel):
     role: Literal["admin", "judge"]
     assigned_venue_id: Optional[str] = None
     is_voted: bool
+    campaign_year: Optional[int] = None
+
+
+class MyInvestmentResponse(BaseModel):
+    venue_id: Optional[str] = None
+    investments: Dict[str, float]
+    is_voted: bool
+    campaign_year: Optional[int] = None
+
+
+class SystemStartRequest(BaseModel):
+    year: Optional[int] = None
+    label: Optional[str] = None
+
+
+class SystemCampaignResponse(BaseModel):
+    id: str
+    year: int
+    label: str
+    status: Literal["active", "closed"]
+    started_at: str
+    closed_at: Optional[str] = None
+    summary: Optional[dict] = None
+
+
+class AdminSystemStateResponse(BaseModel):
+    current_campaign: Optional[SystemCampaignResponse] = None
+    campaigns_by_year: Dict[str, List[SystemCampaignResponse]]
+
+
+class MemberStatusUpdateRequest(BaseModel):
+    assigned_venue_id: Optional[str] = None
+    is_voted: Optional[bool] = None
 
 
 def now_utc() -> datetime:
@@ -265,6 +273,21 @@ def normalize_role(value: object) -> Literal["admin", "judge"]:
     return "admin" if str(value) == "admin" else "judge"
 
 
+def normalize_campaign_year(value: Optional[int]) -> int:
+    year = int(value or now_utc().year)
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=400, detail="年份格式不正確")
+    return year
+
+
+def get_member_scope_year(preferred_year: Optional[int] = None) -> int:
+    if preferred_year is not None:
+        return normalize_campaign_year(preferred_year)
+    if current_campaign:
+        return normalize_campaign_year(int(current_campaign.get("year", now_utc().year)))
+    return normalize_campaign_year(now_utc().year)
+
+
 def slugify(value: str) -> str:
     lowered = value.strip().lower()
     normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", lowered)
@@ -281,9 +304,10 @@ def venue_name_by_id(venue_id: str) -> Optional[str]:
 
 def build_venue_response(venue: dict) -> VenueResponse:
     venue_id = str(venue["id"])
+    scope_year = get_member_scope_year()
     assigned_judges = [
         str(user.get("display_name", "未命名評審"))
-        for user in list_verified_users()
+        for user in list_verified_users(campaign_year=scope_year)
         if normalize_role(user.get("role", "judge")) == "judge"
         and user.get("assigned_venue_id") == venue_id
     ]
@@ -332,16 +356,31 @@ def get_projects_data(venue_id: Optional[str] = None) -> List[dict]:
     return aggregate
 
 
-def get_verified_user(identifier: str) -> Optional[dict]:
-    if db.enabled:
-        return db.get_verified_user(identifier)
-    return verified_users.get(identifier)
+def verified_user_store_key(identifier: str, campaign_year: int) -> str:
+    return f"{campaign_year}::{identifier}"
 
 
-def list_verified_users() -> List[dict]:
+def get_verified_user(identifier: str, campaign_year: Optional[int] = None, allow_legacy: bool = False) -> Optional[dict]:
     if db.enabled:
-        return db.list_verified_users()
-    return sorted(verified_users.values(), key=lambda u: str(u.get("identifier", "")))
+        return db.get_verified_user(identifier, campaign_year=campaign_year, allow_legacy=allow_legacy)
+
+    if campaign_year is not None:
+        scoped = verified_users.get(verified_user_store_key(identifier, campaign_year))
+        if scoped:
+            return scoped
+    if allow_legacy:
+        return verified_users.get(identifier)
+    return None
+
+
+def list_verified_users(campaign_year: Optional[int] = None) -> List[dict]:
+    if db.enabled:
+        return db.list_verified_users(campaign_year=campaign_year)
+
+    rows = list(verified_users.values())
+    if campaign_year is not None:
+        rows = [row for row in rows if row.get("campaign_year") == campaign_year]
+    return sorted(rows, key=lambda u: str(u.get("identifier", "")))
 
 
 def upsert_verified_user(
@@ -349,8 +388,10 @@ def upsert_verified_user(
     display_name: str,
     role: str,
     access_until: datetime,
+    campaign_year: Optional[int] = None,
 ) -> None:
-    existing = get_verified_user(identifier) or {}
+    scope_year = get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year) or {}
     payload = {
         "identifier": identifier,
         "display_name": display_name,
@@ -358,56 +399,63 @@ def upsert_verified_user(
         "access_until": access_until.isoformat(),
         "assigned_venue_id": existing.get("assigned_venue_id"),
         "is_voted": bool(existing.get("is_voted", False)),
+        "campaign_year": scope_year,
     }
 
     if db.enabled:
-        db.upsert_verified_user(identifier, display_name, role, access_until)
+        db.upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
         if payload["assigned_venue_id"]:
-            db.set_verified_user_venue(identifier, payload["assigned_venue_id"])
+            db.set_verified_user_venue(identifier, payload["assigned_venue_id"], campaign_year=scope_year)
         if payload["is_voted"]:
-            db.set_verified_user_voted(identifier, True)
+            db.set_verified_user_voted(identifier, True, campaign_year=scope_year)
         return
 
-    verified_users[identifier] = payload
+    verified_users[verified_user_store_key(identifier, scope_year)] = payload
 
 
-def update_verified_user_role(identifier: str, role: str) -> None:
-    existing = get_verified_user(identifier)
+def update_verified_user_role(identifier: str, role: str, campaign_year: Optional[int] = None) -> None:
+    scope_year = get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.update_verified_user_role(identifier, role)
+        db.update_verified_user_role(identifier, role, campaign_year=scope_year)
         return
 
     existing["role"] = role
-    verified_users[identifier] = existing
+    existing["campaign_year"] = scope_year
+    verified_users[verified_user_store_key(identifier, scope_year)] = existing
 
 
-def set_verified_user_venue(identifier: str, venue_id: str) -> None:
-    existing = get_verified_user(identifier)
+def set_verified_user_venue(identifier: str, venue_id: str, campaign_year: Optional[int] = None) -> None:
+    scope_year = get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.set_verified_user_venue(identifier, venue_id)
+        db.set_verified_user_venue(identifier, venue_id, campaign_year=scope_year)
         return
 
     existing["assigned_venue_id"] = venue_id
-    verified_users[identifier] = existing
+    existing["campaign_year"] = scope_year
+    verified_users[verified_user_store_key(identifier, scope_year)] = existing
 
 
-def set_verified_user_voted(identifier: str, voted: bool) -> None:
-    existing = get_verified_user(identifier)
+def set_verified_user_voted(identifier: str, voted: bool, campaign_year: Optional[int] = None) -> None:
+    scope_year = get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.set_verified_user_voted(identifier, voted)
+        db.set_verified_user_voted(identifier, voted, campaign_year=scope_year)
         return
 
     existing["is_voted"] = voted
-    verified_users[identifier] = existing
+    existing["campaign_year"] = scope_year
+    verified_users[verified_user_store_key(identifier, scope_year)] = existing
 
 
 def create_session(user: SessionUser) -> str:
@@ -463,6 +511,103 @@ def remove_sessions_for_identifier(identifier: str) -> None:
         auth_sessions.pop(token, None)
 
 
+def is_system_active() -> bool:
+    return bool(current_campaign and current_campaign.get("status") == "active")
+
+
+def ensure_system_active() -> None:
+    if not is_system_active():
+        raise HTTPException(status_code=400, detail="本年度模擬投資評分系統尚未啟動或已關閉")
+
+
+def reset_investment_round_state() -> None:
+    scope_year = get_member_scope_year()
+    for venue_id in list(venue_projects.keys()):
+        venue_projects[venue_id] = clone_default_projects()
+        venue_judge_investments[venue_id] = {}
+
+    for account in list_verified_users(campaign_year=scope_year):
+        if normalize_role(account.get("role", "judge")) == "judge":
+            identifier = str(account.get("identifier", ""))
+            if not identifier:
+                continue
+            set_verified_user_voted(identifier, False, campaign_year=scope_year)
+            set_verified_user_venue(identifier, "", campaign_year=scope_year)
+
+
+def build_campaign_summary() -> dict:
+    scope_year = get_member_scope_year()
+    venue_summaries = []
+    for venue in venues:
+        venue_id = str(venue["id"])
+        projects_data = get_projects_data(venue_id)
+        total_investment = sum(float(item.get("total_investment", 0)) for item in projects_data)
+        judge_count = len(
+            [
+                user
+                for user in list_verified_users(campaign_year=scope_year)
+                if normalize_role(user.get("role", "judge")) == "judge"
+                and user.get("assigned_venue_id") == venue_id
+            ]
+        )
+        locked_count = len(
+            [
+                user
+                for user in list_verified_users(campaign_year=scope_year)
+                if normalize_role(user.get("role", "judge")) == "judge"
+                and user.get("assigned_venue_id") == venue_id
+                and bool(user.get("is_voted", False))
+            ]
+        )
+        venue_summaries.append(
+            {
+                "venue_id": venue_id,
+                "venue_name": str(venue.get("name", venue_id)),
+                "total_investment": total_investment,
+                "judge_count": judge_count,
+                "locked_count": locked_count,
+            }
+        )
+
+    return {
+        "venues": venue_summaries,
+        "overall_total_investment": sum(item["total_investment"] for item in venue_summaries),
+    }
+
+
+def serialize_campaign(record: dict) -> SystemCampaignResponse:
+    return SystemCampaignResponse(
+        id=str(record.get("id", "")),
+        year=int(record.get("year", now_utc().year)),
+        label=str(record.get("label", "未命名場次")),
+        status="active" if str(record.get("status", "active")) == "active" else "closed",
+        started_at=str(record.get("started_at", now_utc().isoformat())),
+        closed_at=record.get("closed_at"),
+        summary=record.get("summary"),
+    )
+
+
+def campaigns_grouped_by_year() -> Dict[str, List[SystemCampaignResponse]]:
+    grouped: Dict[str, List[SystemCampaignResponse]] = {}
+
+    all_records: List[dict] = []
+    all_records.extend(campaign_history)
+    if current_campaign:
+        all_records.append(current_campaign)
+
+    sorted_records = sorted(
+        all_records,
+        key=lambda item: str(item.get("started_at", "")),
+        reverse=True,
+    )
+
+    for record in sorted_records:
+        year_key = str(record.get("year", now_utc().year))
+        grouped.setdefault(year_key, []).append(serialize_campaign(record))
+
+    return grouped
+
+
 @app.get("/api/projects", response_model=ProjectsListResponse)
 def get_projects(venue_id: Optional[str] = Query(default=None)):
     if venue_id:
@@ -482,6 +627,8 @@ def get_projects(venue_id: Optional[str] = Query(default=None)):
 
 @app.get("/api/venues", response_model=List[VenueResponse])
 def get_venues():
+    if not is_system_active():
+        return []
     return [build_venue_response(venue) for venue in venues]
 
 
@@ -492,7 +639,7 @@ def auth_me(user: SessionUser = Depends(get_current_user)):
 
 @app.get("/api/judges/status", response_model=JudgeStatusResponse)
 def judge_status(user: SessionUser = Depends(require_roles("judge", "admin"))):
-    record = get_verified_user(user.identifier)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者資料")
 
@@ -502,13 +649,40 @@ def judge_status(user: SessionUser = Depends(require_roles("judge", "admin"))):
         role=normalize_role(record.get("role", user.role)),
         assigned_venue_id=record.get("assigned_venue_id"),
         is_voted=bool(record.get("is_voted", False)),
+        campaign_year=record.get("campaign_year"),
+    )
+
+
+@app.get("/api/judges/my-investment", response_model=MyInvestmentResponse)
+def get_my_investment(user: SessionUser = Depends(require_roles("judge"))):
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+    if not record:
+        raise HTTPException(status_code=404, detail="找不到使用者資料")
+
+    venue_id = record.get("assigned_venue_id")
+    if not venue_id:
+        return MyInvestmentResponse(
+            venue_id=None,
+            investments={},
+            is_voted=bool(record.get("is_voted", False)),
+            campaign_year=record.get("campaign_year"),
+        )
+
+    ensure_venue_project_store(venue_id)
+    saved = venue_judge_investments.get(venue_id, {}).get(user.identifier, {})
+    return MyInvestmentResponse(
+        venue_id=venue_id,
+        investments={project_id: float(amount) for project_id, amount in saved.items()},
+        is_voted=bool(record.get("is_voted", False)),
+        campaign_year=record.get("campaign_year"),
     )
 
 
 @app.post("/api/auth/login", response_model=AuthResponse)
 def login_with_identifier(data: IdentifierRequest):
     identifier, _ = detect_identifier_type(data.identifier)
-    record = get_verified_user(identifier)
+    scope_year = get_member_scope_year()
+    record = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
     if not record:
         raise HTTPException(status_code=404, detail="帳號尚未驗證，請先取得驗證碼")
 
@@ -523,14 +697,17 @@ def login_with_identifier(data: IdentifierRequest):
         display_name=str(record.get("display_name", "未命名使用者")),
         role=normalized_role,
         access_until=refreshed_until,
+        campaign_year=scope_year,
     )
 
+    current_record = get_verified_user(identifier, campaign_year=scope_year) or record
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalized_role,
-        display_name=str(record.get("display_name", "未命名使用者")),
-        venue_id=record.get("assigned_venue_id"),
+        display_name=str(current_record.get("display_name", "未命名使用者")),
+        venue_id=current_record.get("assigned_venue_id"),
+        campaign_year=scope_year,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -540,19 +717,21 @@ def login_with_identifier(data: IdentifierRequest):
 def login_with_name(data: NameLoginRequest):
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    existing = get_verified_user(identifier)
+    scope_year = get_member_scope_year()
+    existing = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
 
-    role = "admin" if display_name in ADMIN_DISPLAY_NAMES else normalize_role(existing.get("role") if existing else "judge")
+    role = normalize_role(existing.get("role") if existing else "judge")
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until)
+    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
 
-    record = get_verified_user(identifier) or {}
+    record = get_verified_user(identifier, campaign_year=scope_year) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalize_role(record.get("role", role)),
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
+        campaign_year=scope_year,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -583,6 +762,7 @@ def request_verification(data: VerificationRequest):
 @app.post("/api/auth/verify", response_model=AuthResponse)
 def verify_identifier(data: VerificationConfirmRequest):
     identifier, _ = detect_identifier_type(data.identifier)
+    scope_year = get_member_scope_year()
     code_data = verification_code_store.get(identifier)
     if not code_data:
         raise HTTPException(status_code=400, detail="請先取得驗證碼")
@@ -599,24 +779,23 @@ def verify_identifier(data: VerificationConfirmRequest):
         raise HTTPException(status_code=400, detail="驗證成功後必須填寫使用者姓名")
 
     verification_code_store.pop(identifier, None)
-    existing = get_verified_user(identifier)
+    existing = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
     if existing and existing.get("role") in {"admin", "judge", "guest"}:
         role = normalize_role(existing.get("role"))
-    elif identifier in ADMIN_IDENTIFIERS:
-        role = "admin"
     else:
         role = "judge"
 
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until)
+    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
 
-    record = get_verified_user(identifier) or {}
+    record = get_verified_user(identifier, campaign_year=scope_year) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalize_role(record.get("role", role)),
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
+        campaign_year=scope_year,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -634,8 +813,9 @@ def join_venue(
     data: JoinVenueRequest,
     user: SessionUser = Depends(require_roles("judge")),
 ):
+    ensure_system_active()
     validate_venue_exists(data.venue_id)
-    record = get_verified_user(user.identifier)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者驗證資料")
 
@@ -644,14 +824,14 @@ def join_venue(
         raise HTTPException(status_code=400, detail="一位評審只能加入一個會場")
 
     if not assigned:
-        set_verified_user_venue(user.identifier, data.venue_id)
+        set_verified_user_venue(user.identifier, data.venue_id, campaign_year=user.campaign_year)
 
     return {"success": True, "message": "加入會場成功", "venue_id": data.venue_id}
 
 
 @app.post("/api/judges/leave-venue")
 def leave_venue(user: SessionUser = Depends(require_roles("judge"))):
-    record = get_verified_user(user.identifier)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者驗證資料")
     if bool(record.get("is_voted", False)):
@@ -671,13 +851,14 @@ def leave_venue(user: SessionUser = Depends(require_roles("judge"))):
                 )
 
     if db.enabled:
-        db.set_verified_user_venue(user.identifier, "")
+        db.set_verified_user_venue(user.identifier, "", campaign_year=user.campaign_year)
     else:
         record["assigned_venue_id"] = None
         record["is_voted"] = False
-        verified_users[user.identifier] = record
+        record["campaign_year"] = get_member_scope_year(user.campaign_year)
+        verified_users[verified_user_store_key(user.identifier, get_member_scope_year(user.campaign_year))] = record
 
-    set_verified_user_voted(user.identifier, False)
+    set_verified_user_voted(user.identifier, False, campaign_year=user.campaign_year)
 
     return {"success": True, "message": "已離開會場"}
 
@@ -687,6 +868,7 @@ def submit_investment(
     data: InvestmentData,
     user: SessionUser = Depends(require_roles("admin", "judge")),
 ):
+    ensure_system_active()
     total_budget = 10000
     venue_id: Optional[str] = None
 
@@ -705,7 +887,7 @@ def submit_investment(
         )
 
     if user.role == "judge":
-        record = get_verified_user(user.identifier)
+        record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
         if not record:
             raise HTTPException(status_code=404, detail="找不到評審帳號資料")
         venue_id = record.get("assigned_venue_id")
@@ -740,7 +922,7 @@ def submit_investment(
             project["total_investment"] += data.investments[project["id"]]
 
     if user.role == "judge":
-        set_verified_user_voted(user.identifier, True)
+        set_verified_user_voted(user.identifier, True, campaign_year=user.campaign_year)
 
     updated_projects = get_projects_data(venue_id)
     return SubmitInvestmentResponse(
@@ -752,7 +934,7 @@ def submit_investment(
 
 @app.get("/api/judges")
 def get_judges():
-    judge_users = [user for user in list_verified_users() if user.get("role") == "judge"]
+    judge_users = [user for user in list_verified_users(campaign_year=get_member_scope_year()) if user.get("role") == "judge"]
     response = []
     for user in judge_users:
         response.append(
@@ -766,12 +948,79 @@ def get_judges():
     return {"judges": response}
 
 
+@app.get("/api/admin/system-state", response_model=AdminSystemStateResponse)
+def get_admin_system_state(user: SessionUser = Depends(require_roles("admin"))):
+    _ = user
+    return AdminSystemStateResponse(
+        current_campaign=serialize_campaign(current_campaign) if current_campaign else None,
+        campaigns_by_year=campaigns_grouped_by_year(),
+    )
+
+
+@app.post("/api/admin/system/start", response_model=SystemCampaignResponse)
+def start_system_campaign(
+    data: SystemStartRequest,
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    global current_campaign
+
+    if is_system_active():
+        raise HTTPException(status_code=400, detail="目前已有啟動中的專題發表場次，請先關閉")
+
+    campaign_year = normalize_campaign_year(data.year)
+
+    default_label = f"{campaign_year} 專題模擬投資評分"
+    label = (data.label or default_label).strip()
+    if not label:
+        label = default_label
+
+    campaign_id = f"campaign-{campaign_year}-{secrets.token_hex(3)}"
+    started_at = now_utc().isoformat()
+    current_campaign = {
+        "id": campaign_id,
+        "year": campaign_year,
+        "label": label,
+        "status": "active",
+        "started_at": started_at,
+        "closed_at": None,
+        "summary": None,
+    }
+
+    reset_investment_round_state()
+    return serialize_campaign(current_campaign)
+
+
+@app.post("/api/admin/system/close", response_model=SystemCampaignResponse)
+def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
+    _ = user
+    global current_campaign
+
+    if not current_campaign or current_campaign.get("status") != "active":
+        raise HTTPException(status_code=400, detail="目前沒有啟動中的場次可關閉")
+
+    closed = dict(current_campaign)
+    closed["status"] = "closed"
+    closed["closed_at"] = now_utc().isoformat()
+    closed["summary"] = build_campaign_summary()
+    campaign_history.append(closed)
+
+    # Venue data is runtime-only per campaign. Clear it after archive/close.
+    venues.clear()
+    venue_projects.clear()
+    venue_judge_investments.clear()
+
+    current_campaign = None
+
+    return serialize_campaign(closed)
+
+
 @app.get("/api/admin/overview", response_model=AdminOverviewResponse)
 def get_admin_overview(user: SessionUser = Depends(require_roles("admin"))):
     _ = user
     return AdminOverviewResponse(
         active_sessions=len(auth_sessions),
-        verified_users=list_verified_users(),
+        verified_users=list_verified_users(campaign_year=get_member_scope_year()),
         venues=[build_venue_response(venue) for venue in venues],
     )
 
@@ -779,6 +1028,7 @@ def get_admin_overview(user: SessionUser = Depends(require_roles("admin"))):
 @app.post("/api/admin/venues", response_model=VenueResponse)
 def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_roles("admin"))):
     _ = user
+    ensure_system_active()
     name = data.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="會場名稱不可為空")
@@ -805,6 +1055,7 @@ def update_venue(
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
+    ensure_system_active()
     name = data.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="會場名稱不可為空")
@@ -826,12 +1077,13 @@ def update_venue(
 @app.delete("/api/admin/venues/{venue_id}")
 def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin"))):
     _ = user
+    ensure_system_active()
     if len(venues) <= 1:
         raise HTTPException(status_code=400, detail="至少需保留一個會場")
 
     assigned_users = [
         u
-        for u in list_verified_users()
+        for u in list_verified_users(campaign_year=get_member_scope_year())
         if u.get("role") == "judge" and u.get("assigned_venue_id") == venue_id
     ]
     if assigned_users:
@@ -847,11 +1099,15 @@ def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin
 
 
 @app.get("/api/admin/members")
-def list_members(user: SessionUser = Depends(require_roles("admin"))):
+def list_members(
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
     _ = user
+    scope_year = get_member_scope_year(year)
     members = []
-    for account in list_verified_users():
-        if str(account.get("identifier", "")).startswith("name::"):
+    for account in list_verified_users(campaign_year=scope_year):
+        if str(account.get("identifier", "")).startswith("name::") and normalize_role(account.get("role", "judge")) == "judge":
             members.append(
                 {
                     "identifier": account.get("identifier"),
@@ -859,21 +1115,27 @@ def list_members(user: SessionUser = Depends(require_roles("admin"))):
                     "role": normalize_role(account.get("role", "judge")),
                     "assigned_venue_id": account.get("assigned_venue_id"),
                     "is_voted": bool(account.get("is_voted", False)),
+                    "campaign_year": scope_year,
                 }
             )
-    return {"members": members}
+    return {"members": members, "year": scope_year}
 
 
 @app.post("/api/admin/members")
-def create_member(data: MemberCreateRequest, user: SessionUser = Depends(require_roles("admin"))):
+def create_member(
+    data: MemberCreateRequest,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
     _ = user
+    scope_year = get_member_scope_year(year)
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    if get_verified_user(identifier):
+    if get_verified_user(identifier, campaign_year=scope_year):
         raise HTTPException(status_code=400, detail="此姓名成員已存在")
 
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, data.role, access_until)
+    upsert_verified_user(identifier, display_name, data.role, access_until, campaign_year=scope_year)
     return {
         "success": True,
         "member": {
@@ -882,6 +1144,7 @@ def create_member(data: MemberCreateRequest, user: SessionUser = Depends(require
             "role": data.role,
             "assigned_venue_id": None,
             "is_voted": False,
+            "campaign_year": scope_year,
         },
     }
 
@@ -890,43 +1153,96 @@ def create_member(data: MemberCreateRequest, user: SessionUser = Depends(require
 def update_member(
     identifier: str,
     data: MemberUpdateRequest,
+    year: Optional[int] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    account = get_verified_user(identifier)
+    scope_year = get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
     next_display_name = normalize_display_name(data.display_name) if data.display_name is not None else str(account.get("display_name", ""))
     next_role = data.role or normalize_role(account.get("role", "judge"))
     access_until = parse_time(account.get("access_until")) or (now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS))
-    upsert_verified_user(identifier, next_display_name, next_role, access_until)
+    upsert_verified_user(identifier, next_display_name, next_role, access_until, campaign_year=scope_year)
     return {"success": True, "message": "成員資料已更新"}
 
 
 @app.post("/api/admin/members/{identifier}/unlock")
-def unlock_member(identifier: str, user: SessionUser = Depends(require_roles("admin"))):
+def unlock_member(
+    identifier: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
     _ = user
-    account = get_verified_user(identifier)
+    scope_year = get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
-    set_verified_user_voted(identifier, False)
+    set_verified_user_voted(identifier, False, campaign_year=scope_year)
     return {"success": True, "message": "已解除鎖定，可再次上傳"}
 
 
-@app.delete("/api/admin/members/{identifier}")
-def delete_member(identifier: str, user: SessionUser = Depends(require_roles("admin"))):
+@app.patch("/api/admin/members/{identifier}/status")
+def update_member_status(
+    identifier: str,
+    data: MemberStatusUpdateRequest,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
     _ = user
-    account = get_verified_user(identifier)
+    scope_year = get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year)
+    if not account:
+        raise HTTPException(status_code=404, detail="找不到成員")
+
+    if normalize_role(account.get("role", "judge")) != "judge":
+        raise HTTPException(status_code=400, detail="僅能調整評審狀態")
+
+    if data.assigned_venue_id is not None:
+        venue_id = data.assigned_venue_id.strip()
+        if venue_id:
+            validate_venue_exists(venue_id)
+            set_verified_user_venue(identifier, venue_id, campaign_year=scope_year)
+        else:
+            set_verified_user_venue(identifier, "", campaign_year=scope_year)
+
+    if data.is_voted is not None:
+        set_verified_user_voted(identifier, data.is_voted, campaign_year=scope_year)
+
+    updated = get_verified_user(identifier, campaign_year=scope_year) or {}
+    return {
+        "success": True,
+        "member": {
+            "identifier": updated.get("identifier", identifier),
+            "display_name": updated.get("display_name", ""),
+            "role": normalize_role(updated.get("role", "judge")),
+            "assigned_venue_id": updated.get("assigned_venue_id"),
+            "is_voted": bool(updated.get("is_voted", False)),
+            "campaign_year": scope_year,
+        },
+    }
+
+
+@app.delete("/api/admin/members/{identifier}")
+def delete_member(
+    identifier: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    scope_year = get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
     if db.enabled:
-        doc_id = db._identity_doc_id(identifier)
+        doc_id = db._identity_doc_id(identifier, scope_year)
         db._client.collection("verified_users").document(doc_id).delete()
     else:
-        verified_users.pop(identifier, None)
+        verified_users.pop(verified_user_store_key(identifier, scope_year), None)
 
     remove_sessions_for_identifier(identifier)
     return {"success": True, "message": "成員已刪除"}
@@ -935,11 +1251,12 @@ def delete_member(identifier: str, user: SessionUser = Depends(require_roles("ad
 @app.post("/api/admin/authorize-user")
 def authorize_user(
     data: AuthorizeJudgeRequest,
+    year: Optional[int] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
     identifier = data.identifier.strip().lower()
-    update_verified_user_role(identifier, data.role)
+    update_verified_user_role(identifier, data.role, campaign_year=get_member_scope_year(year))
     return {
         "success": True,
         "message": f"帳號 {identifier} 已授權為 {data.role}",
@@ -949,13 +1266,7 @@ def authorize_user(
 @app.post("/api/admin/reset-round", response_model=AdminRoundResetResponse)
 def reset_round(user: SessionUser = Depends(require_roles("admin"))):
     _ = user
-    for venue_id in list(venue_projects.keys()):
-        venue_projects[venue_id] = clone_default_projects()
-        venue_judge_investments[venue_id] = {}
-
-    for account in list_verified_users():
-        if normalize_role(account.get("role", "judge")) == "judge":
-            set_verified_user_voted(str(account.get("identifier", "")), False)
+    reset_investment_round_state()
 
     return AdminRoundResetResponse(success=True, message="回合已重置，投資與評審投票狀態已清空")
 

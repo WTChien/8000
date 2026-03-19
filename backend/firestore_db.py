@@ -132,23 +132,43 @@ class FirestoreDB:
 
         batch.commit()
 
-    def _identity_doc_id(self, identifier: str) -> str:
-        return identifier.replace("@", "_at_").replace(".", "_dot_")
+    def _identity_doc_id(self, identifier: str, campaign_year: Optional[int] = None) -> str:
+        normalized = identifier.replace("@", "_at_").replace(".", "_dot_")
+        if campaign_year is None:
+            return normalized
+        return f"{campaign_year}__{normalized}"
 
-    def get_verified_user(self, identifier: str) -> Optional[Dict[str, object]]:
+    def get_verified_user(
+        self,
+        identifier: str,
+        campaign_year: Optional[int] = None,
+        allow_legacy: bool = False,
+    ) -> Optional[Dict[str, object]]:
         if not self.enabled or self._client is None:
             return None
 
-        doc = self._client.collection("verified_users").document(self._identity_doc_id(identifier)).get()
-        if not doc.exists:
-            return None
+        candidate_ids = []
+        if campaign_year is not None:
+            candidate_ids.append(self._identity_doc_id(identifier, campaign_year))
+        if allow_legacy or campaign_year is None:
+            legacy_doc_id = self._identity_doc_id(identifier)
+            if legacy_doc_id not in candidate_ids:
+                candidate_ids.append(legacy_doc_id)
 
-        data = doc.to_dict() or {}
-        data.setdefault("identifier", identifier)
-        data.setdefault("role", "judge")
-        data.setdefault("is_voted", False)
-        data.setdefault("assigned_venue_id", None)
-        return data
+        for doc_id in candidate_ids:
+            doc = self._client.collection("verified_users").document(doc_id).get()
+            if not doc.exists:
+                continue
+
+            data = doc.to_dict() or {}
+            data.setdefault("identifier", identifier)
+            data.setdefault("role", "judge")
+            data.setdefault("is_voted", False)
+            data.setdefault("assigned_venue_id", None)
+            data.setdefault("campaign_year", campaign_year if doc_id != self._identity_doc_id(identifier) else None)
+            return data
+
+        return None
 
     def upsert_verified_user(
         self,
@@ -156,6 +176,7 @@ class FirestoreDB:
         display_name: str,
         role: str,
         access_until: datetime,
+        campaign_year: Optional[int] = None,
     ) -> None:
         if not self.enabled or self._client is None:
             return
@@ -168,46 +189,50 @@ class FirestoreDB:
             "access_until": access_until.isoformat(),
             "updated_at": now_iso,
             "is_voted": False,
+            "campaign_year": campaign_year,
         }
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier)).set(payload, merge=True)
+        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(payload, merge=True)
 
-    def update_verified_user_role(self, identifier: str, role: str) -> None:
+    def update_verified_user_role(self, identifier: str, role: str, campaign_year: Optional[int] = None) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier)).set(
+        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
             {
                 "role": role,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_year": campaign_year,
             },
             merge=True,
         )
 
-    def set_verified_user_venue(self, identifier: str, venue_id: str) -> None:
+    def set_verified_user_venue(self, identifier: str, venue_id: str, campaign_year: Optional[int] = None) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier)).set(
+        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
             {
                 "assigned_venue_id": venue_id,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_year": campaign_year,
             },
             merge=True,
         )
 
-    def set_verified_user_voted(self, identifier: str, is_voted: bool) -> None:
+    def set_verified_user_voted(self, identifier: str, is_voted: bool, campaign_year: Optional[int] = None) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier)).set(
+        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
             {
                 "is_voted": is_voted,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_year": campaign_year,
             },
             merge=True,
         )
 
-    def list_verified_users(self) -> List[Dict[str, object]]:
+    def list_verified_users(self, campaign_year: Optional[int] = None) -> List[Dict[str, object]]:
         if not self.enabled or self._client is None:
             return []
 
@@ -215,10 +240,13 @@ class FirestoreDB:
         users = []
         for doc in docs:
             row = doc.to_dict() or {}
+            if campaign_year is not None and row.get("campaign_year") != campaign_year:
+                continue
             row.setdefault("identifier", "")
             row.setdefault("display_name", "")
             row.setdefault("role", "judge")
             row.setdefault("is_voted", False)
             row.setdefault("assigned_venue_id", None)
+            row.setdefault("campaign_year", campaign_year)
             users.append(row)
         return sorted(users, key=lambda u: str(u.get("identifier", "")))

@@ -28,9 +28,11 @@ interface ChartDatum {
 
 interface DashboardProps {
   venueId: string;
+  isPresentationMode?: boolean;
+  onPresentationModeChange?: (mode: boolean) => void;
 }
 
-function Dashboard({ venueId }: DashboardProps) {
+function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChange }: DashboardProps) {
   // State management
   const [chartData, setChartData] = useState<ChartDatum[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -39,6 +41,11 @@ function Dashboard({ venueId }: DashboardProps) {
   const [totalInvested, setTotalInvested] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [venueName, setVenueName] = useState('');
+  
+  // Presentation mode states
+  const [revealedCount, setRevealedCount] = useState(0);
+  const [isAutoReveal, setIsAutoReveal] = useState(false);
+  const [sortedProjects, setSortedProjects] = useState<Array<Project & { rank: number }>>([])
 
   const fetchProjects = useCallback(async (): Promise<void> => {
     try {
@@ -65,6 +72,13 @@ function Dashboard({ venueId }: DashboardProps) {
       const total = projectList.reduce((sum, proj) => sum + proj.total_investment, 0);
       setTotalInvested(total);
 
+      // Sort projects by investment amount (ascending).
+      // Lowest investment should be revealed first as the "last place".
+      const sorted = [...projectList]
+        .sort((a, b) => a.total_investment - b.total_investment)
+        .map((proj, idx) => ({ ...proj, rank: projectList.length - idx }));
+      setSortedProjects(sorted);
+
       setLastUpdated(new Date());
       setError(null);
       setLoading(false);
@@ -86,6 +100,32 @@ function Dashboard({ venueId }: DashboardProps) {
 
     return () => clearInterval(intervalId);
   }, [fetchProjects]);
+
+  // Auto-reveal ranking items
+  useEffect(() => {
+    if (!isAutoReveal || revealedCount >= sortedProjects.length) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setRevealedCount((prev) => prev + 1);
+    }, 1200); // 1.2 seconds between reveals
+
+    return () => clearTimeout(timer);
+  }, [isAutoReveal, revealedCount, sortedProjects.length]);
+
+  // Keep reveal state stable during polling; only clamp when project count changes.
+  useEffect(() => {
+    setRevealedCount((prev) => Math.min(prev, sortedProjects.length));
+  }, [sortedProjects.length]);
+
+  // Reset reveal flow only when entering presentation mode.
+  useEffect(() => {
+    if (isPresentationMode) {
+      setRevealedCount(0);
+      setIsAutoReveal(false);
+    }
+  }, [isPresentationMode]);
 
   const getColor = (index: number): string => {
     return COLOR_PALETTE[index % COLOR_PALETTE.length];
@@ -133,11 +173,97 @@ function Dashboard({ venueId }: DashboardProps) {
     );
   }
 
+  if (isPresentationMode) {
+    return (
+      <div className="dashboard-presentation">
+        <div className="presentation-header">
+          <h1>{venueName || venueId} - 成果發表戰況</h1>
+          <button 
+            className="presentation-exit-btn"
+            onClick={() => onPresentationModeChange?.(false)}
+            title="按 ESC 或點擊此按鈕退出"
+          >
+            ✕ 退出演示
+          </button>
+        </div>
+
+        <div className="presentation-ranking">
+          <div className="ranking-controls">
+            <button 
+              className="ranking-btn"
+              onClick={() => setRevealedCount(sortedProjects.length)}
+            >
+              📊 一次公布所有結果
+            </button>
+            <button 
+              className={`ranking-btn ${isAutoReveal ? 'active' : ''}`}
+              onClick={() => setIsAutoReveal(!isAutoReveal)}
+            >
+              {isAutoReveal ? '⏸ 暫停' : '▶ 逐個揭曉排名'}
+            </button>
+            {revealedCount < sortedProjects.length && !isAutoReveal && (
+              <button 
+                className="ranking-btn next-btn"
+                onClick={() => setRevealedCount((prev) => Math.min(prev + 1, sortedProjects.length))}
+              >
+                ⏭ 下一個
+              </button>
+            )}
+          </div>
+
+          <div className="ranking-list">
+            {sortedProjects.map((project, idx) => (
+              <div
+                key={project.id}
+                className={`ranking-item ${idx < revealedCount ? 'revealed' : ''}`}
+                style={{
+                    animationDelay: `${idx < revealedCount ? idx * 0.08 : 0}s`
+                }}
+              >
+                <div className="ranking-rank">
+                  第 {project.rank} 名
+                </div>
+                <div className="ranking-name">
+                  {project.name}
+                </div>
+                <div className="ranking-amount">
+                  {idx < revealedCount ? `$${project.total_investment.toLocaleString()}` : '？？？'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="presentation-footer">
+          <div className="footer-stat">
+            <span className="footer-label">總投資金額</span>
+            <span className="footer-value">${totalInvested.toLocaleString()}</span>
+          </div>
+          <div className="footer-stat">
+            <span className="footer-label">已投資專題</span>
+            <span className="footer-value">{projects.filter((p) => p.total_investment > 0).length} / {projects.length}</span>
+          </div>
+          <div className="footer-stat">
+            <span className="footer-label">最後更新</span>
+            <span className="footer-value">{lastUpdated.toLocaleTimeString('zh-Hant-TW')}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="dashboard container">
       <section className="section dashboard-header">
         <h2>{venueName || venueId} - 成果發表戰況</h2>
         <p>最終送出後排名即時更新，準備迎接開獎時刻</p>
+        <button 
+          className="submit-button"
+          onClick={() => onPresentationModeChange?.(true)}
+          style={{ marginTop: 12 }}
+        >
+          🎬 全屏投影演示
+        </button>
       </section>
 
       <section className="section dashboard-stats">
