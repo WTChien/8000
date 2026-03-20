@@ -1,7 +1,8 @@
 import os
 import importlib
+import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 DEFAULT_CREDENTIALS_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -132,8 +133,16 @@ class FirestoreDB:
 
         batch.commit()
 
-    def _identity_doc_id(self, identifier: str, campaign_year: Optional[int] = None) -> str:
+    def _identity_doc_id(
+        self,
+        identifier: str,
+        campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
+    ) -> str:
         normalized = identifier.replace("@", "_at_").replace(".", "_dot_")
+        if campaign_id is not None:
+            normalized_campaign = re.sub(r"[^a-zA-Z0-9_-]", "_", str(campaign_id))
+            return f"campaign_{normalized_campaign}__{normalized}"
         if campaign_year is None:
             return normalized
         return f"{campaign_year}__{normalized}"
@@ -142,12 +151,15 @@ class FirestoreDB:
         self,
         identifier: str,
         campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
         allow_legacy: bool = False,
     ) -> Optional[Dict[str, object]]:
         if not self.enabled or self._client is None:
             return None
 
         candidate_ids = []
+        if campaign_id is not None:
+            candidate_ids.append(self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id))
         if campaign_year is not None:
             candidate_ids.append(self._identity_doc_id(identifier, campaign_year))
         if allow_legacy or campaign_year is None:
@@ -165,6 +177,7 @@ class FirestoreDB:
             data.setdefault("role", "judge")
             data.setdefault("is_voted", False)
             data.setdefault("assigned_venue_id", None)
+            data.setdefault("campaign_id", campaign_id)
             data.setdefault("campaign_year", campaign_year if doc_id != self._identity_doc_id(identifier) else None)
             return data
 
@@ -177,6 +190,7 @@ class FirestoreDB:
         role: str,
         access_until: datetime,
         campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
     ) -> None:
         if not self.enabled or self._client is None:
             return
@@ -190,49 +204,79 @@ class FirestoreDB:
             "updated_at": now_iso,
             "is_voted": False,
             "campaign_year": campaign_year,
+            "campaign_id": campaign_id,
         }
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(payload, merge=True)
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id)
+        ).set(payload, merge=True)
 
-    def update_verified_user_role(self, identifier: str, role: str, campaign_year: Optional[int] = None) -> None:
+    def update_verified_user_role(
+        self,
+        identifier: str,
+        role: str,
+        campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
+    ) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id)
+        ).set(
             {
                 "role": role,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "campaign_year": campaign_year,
+                "campaign_id": campaign_id,
             },
             merge=True,
         )
 
-    def set_verified_user_venue(self, identifier: str, venue_id: str, campaign_year: Optional[int] = None) -> None:
+    def set_verified_user_venue(
+        self,
+        identifier: str,
+        venue_id: str,
+        campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
+    ) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id)
+        ).set(
             {
                 "assigned_venue_id": venue_id,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "campaign_year": campaign_year,
+                "campaign_id": campaign_id,
             },
             merge=True,
         )
 
-    def set_verified_user_voted(self, identifier: str, is_voted: bool, campaign_year: Optional[int] = None) -> None:
+    def set_verified_user_voted(
+        self,
+        identifier: str,
+        is_voted: bool,
+        campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
+    ) -> None:
         if not self.enabled or self._client is None:
             return
 
-        self._client.collection("verified_users").document(self._identity_doc_id(identifier, campaign_year)).set(
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id)
+        ).set(
             {
                 "is_voted": is_voted,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "campaign_year": campaign_year,
+                "campaign_id": campaign_id,
             },
             merge=True,
         )
 
-    def list_verified_users(self, campaign_year: Optional[int] = None) -> List[Dict[str, object]]:
+    def list_verified_users(self, campaign_year: Optional[int] = None, campaign_id: Optional[str] = None) -> List[Dict[str, object]]:
         if not self.enabled or self._client is None:
             return []
 
@@ -240,13 +284,86 @@ class FirestoreDB:
         users = []
         for doc in docs:
             row = doc.to_dict() or {}
-            if campaign_year is not None and row.get("campaign_year") != campaign_year:
+            if campaign_id is not None:
+                if row.get("campaign_id") != campaign_id:
+                    continue
+            elif campaign_year is not None and row.get("campaign_year") != campaign_year:
                 continue
             row.setdefault("identifier", "")
             row.setdefault("display_name", "")
             row.setdefault("role", "judge")
             row.setdefault("is_voted", False)
             row.setdefault("assigned_venue_id", None)
+            row.setdefault("campaign_id", campaign_id)
             row.setdefault("campaign_year", campaign_year)
             users.append(row)
         return sorted(users, key=lambda u: str(u.get("identifier", "")))
+
+    def _campaign_state_doc_id(self, campaign_year: int) -> str:
+        return f"year_{campaign_year}"
+
+    def get_campaign_state(self, campaign_year: int) -> Dict[str, Any]:
+        if not self.enabled or self._client is None:
+            return {}
+
+        doc = self._client.collection("campaign_states").document(self._campaign_state_doc_id(campaign_year)).get()
+        if not doc.exists:
+            return {}
+
+        data = doc.to_dict() or {}
+        data.setdefault("year", campaign_year)
+        data.setdefault("current_campaign", None)
+        data.setdefault("campaign_history", [])
+        data.setdefault("venues", [])
+        data.setdefault("venue_projects", {})
+        data.setdefault("venue_judge_investments", {})
+        data.setdefault("recently_deleted_campaigns", [])
+        return data
+
+    def save_campaign_state(self, campaign_year: int, state: Dict[str, Any]) -> None:
+        if not self.enabled or self._client is None:
+            return
+
+        payload = {
+            "year": campaign_year,
+            "current_campaign": state.get("current_campaign"),
+            "campaign_history": state.get("campaign_history", []),
+            "venues": state.get("venues", []),
+            "venue_projects": state.get("venue_projects", {}),
+            "venue_judge_investments": state.get("venue_judge_investments", {}),
+            "recently_deleted_campaigns": state.get("recently_deleted_campaigns", []),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._client.collection("campaign_states").document(self._campaign_state_doc_id(campaign_year)).set(payload, merge=True)
+
+    def list_campaign_states(self) -> List[Dict[str, Any]]:
+        if not self.enabled or self._client is None:
+            return []
+
+        docs = self._client.collection("campaign_states").stream()
+        states: List[Dict[str, Any]] = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            if "year" not in data:
+                continue
+            data.setdefault("current_campaign", None)
+            data.setdefault("campaign_history", [])
+            data.setdefault("venues", [])
+            data.setdefault("venue_projects", {})
+            data.setdefault("venue_judge_investments", {})
+            data.setdefault("recently_deleted_campaigns", [])
+            states.append(data)
+        return sorted(states, key=lambda item: int(item.get("year", 0)), reverse=True)
+
+    def get_active_campaign_state(self) -> Optional[Dict[str, Any]]:
+        if not self.enabled or self._client is None:
+            return None
+
+        for state in self.list_campaign_states():
+            current = state.get("current_campaign")
+            if isinstance(current, dict) and str(current.get("status", "")) == "active":
+                return {
+                    "year": int(state.get("year", 0)),
+                    "state": state,
+                }
+        return None

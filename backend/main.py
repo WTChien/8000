@@ -1,9 +1,10 @@
 import os
 import re
 import secrets
+import math
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from firestore_db import FirestoreDB
 
 
 def initialize_startup_state() -> None:
-    db.seed_if_empty(DEFAULT_PROJECTS, DEFAULT_JUDGES)
+    restore_active_campaign_state()
     initialize_venue_projects()
 
 
@@ -59,12 +60,14 @@ venue_projects: Dict[str, List[dict]] = {}
 venue_judge_investments: Dict[str, Dict[str, Dict[str, float]]] = {}
 
 campaign_history: List[dict] = []
+recently_deleted_campaigns: List[dict] = []
 current_campaign: Optional[dict] = None
 
 DEV_BYPASS_VERIFICATION = os.getenv("DEV_BYPASS_VERIFICATION", "true").lower() == "true"
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "48"))
 CODE_TTL_SECONDS = int(os.getenv("CODE_TTL_SECONDS", "300"))
 VERIFIED_ACCESS_DAYS = int(os.getenv("VERIFIED_ACCESS_DAYS", "2"))
+ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
 
 PHONE_PATTERN = re.compile(r"^09\d{8}$")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -102,6 +105,7 @@ class SessionUser(BaseModel):
     identifier: str
     venue_id: Optional[str] = None
     campaign_year: Optional[int] = None
+    campaign_id: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
@@ -145,6 +149,10 @@ class VenueCreateRequest(BaseModel):
 class VenueUpdateRequest(BaseModel):
     name: str
     classroom: Optional[str] = None
+
+
+class VenueProjectsUpdateRequest(BaseModel):
+    project_names: List[str]
 
 
 class MemberCreateRequest(BaseModel):
@@ -199,6 +207,7 @@ class JudgeStatusResponse(BaseModel):
     assigned_venue_id: Optional[str] = None
     is_voted: bool
     campaign_year: Optional[int] = None
+    campaign_id: Optional[str] = None
 
 
 class MyInvestmentResponse(BaseModel):
@@ -206,10 +215,10 @@ class MyInvestmentResponse(BaseModel):
     investments: Dict[str, float]
     is_voted: bool
     campaign_year: Optional[int] = None
+    campaign_id: Optional[str] = None
 
 
 class SystemStartRequest(BaseModel):
-    year: Optional[int] = None
     label: Optional[str] = None
 
 
@@ -223,9 +232,16 @@ class SystemCampaignResponse(BaseModel):
     summary: Optional[dict] = None
 
 
+class RecentlyDeletedCampaignResponse(SystemCampaignResponse):
+    deleted_at: str
+    restore_deadline: str
+    days_remaining: int
+
+
 class AdminSystemStateResponse(BaseModel):
     current_campaign: Optional[SystemCampaignResponse] = None
     campaigns_by_year: Dict[str, List[SystemCampaignResponse]]
+    recently_deleted_by_year: Dict[str, List[RecentlyDeletedCampaignResponse]]
 
 
 class MemberStatusUpdateRequest(BaseModel):
@@ -288,6 +304,41 @@ def get_member_scope_year(preferred_year: Optional[int] = None) -> int:
     return normalize_campaign_year(now_utc().year)
 
 
+def get_member_scope_campaign_id(preferred_campaign_id: Optional[str] = None) -> Optional[str]:
+    if preferred_campaign_id:
+        value = preferred_campaign_id.strip()
+        if value:
+            return value
+    if current_campaign:
+        return str(current_campaign.get("id", "")) or None
+    return None
+
+
+def resolve_campaign_year_by_id(campaign_id: str, fallback_year: Optional[int] = None) -> int:
+    fallback = normalize_campaign_year(fallback_year or now_utc().year)
+    target = campaign_id.strip()
+    if not target:
+        return fallback
+
+    if current_campaign and str(current_campaign.get("id", "")) == target:
+        return campaign_record_year(current_campaign, fallback)
+
+    for item in campaign_history:
+        if str(item.get("id", "")) == target:
+            return campaign_record_year(item, fallback)
+
+    if db.enabled:
+        for state in db.list_campaign_states():
+            for item in state.get("campaign_history", []):
+                if isinstance(item, dict) and str(item.get("id", "")) == target:
+                    return campaign_record_year(item, int(state.get("year", fallback)))
+            current = state.get("current_campaign")
+            if isinstance(current, dict) and str(current.get("id", "")) == target:
+                return campaign_record_year(current, int(state.get("year", fallback)))
+
+    return fallback
+
+
 def slugify(value: str) -> str:
     lowered = value.strip().lower()
     normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", lowered)
@@ -305,9 +356,10 @@ def venue_name_by_id(venue_id: str) -> Optional[str]:
 def build_venue_response(venue: dict) -> VenueResponse:
     venue_id = str(venue["id"])
     scope_year = get_member_scope_year()
+    scope_campaign_id = get_member_scope_campaign_id()
     assigned_judges = [
         str(user.get("display_name", "未命名評審"))
-        for user in list_verified_users(campaign_year=scope_year)
+        for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
         if normalize_role(user.get("role", "judge")) == "judge"
         and user.get("assigned_venue_id") == venue_id
     ]
@@ -344,6 +396,227 @@ def initialize_venue_projects() -> None:
         ensure_venue_project_store(str(venue["id"]))
 
 
+def campaign_record_year(record: dict, default_year: Optional[int] = None) -> int:
+    fallback = normalize_campaign_year(default_year or now_utc().year)
+    raw = record.get("year", fallback)
+    try:
+        return normalize_campaign_year(int(raw))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def clone_venue_projects(data: Dict[str, List[dict]]) -> Dict[str, List[dict]]:
+    cloned: Dict[str, List[dict]] = {}
+    for venue_id, projects_list in data.items():
+        rows: List[dict] = []
+        for project in projects_list:
+            rows.append(
+                {
+                    "id": str(project.get("id", "")),
+                    "name": str(project.get("name", "未命名專題")),
+                    "total_investment": float(project.get("total_investment", 0)),
+                }
+            )
+        cloned[str(venue_id)] = rows
+    return cloned
+
+
+def clone_venue_judge_investments(data: Dict[str, Dict[str, Dict[str, float]]]) -> Dict[str, Dict[str, Dict[str, float]]]:
+    cloned: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for venue_id, judge_map in data.items():
+        cloned_judges: Dict[str, Dict[str, float]] = {}
+        for identifier, allocations in judge_map.items():
+            cloned_judges[str(identifier)] = {
+                str(project_id): float(amount)
+                for project_id, amount in allocations.items()
+            }
+        cloned[str(venue_id)] = cloned_judges
+    return cloned
+
+
+def campaign_history_for_year(campaign_year: int) -> List[dict]:
+    if db.enabled:
+        state = db.get_campaign_state(campaign_year)
+        rows = state.get("campaign_history", []) if isinstance(state, dict) else []
+        records = [dict(item) for item in rows if isinstance(item, dict)]
+    else:
+        records = [
+            dict(item)
+            for item in campaign_history
+            if campaign_record_year(item, campaign_year) == campaign_year
+        ]
+
+    latest_by_id: Dict[str, dict] = {}
+    for item in records:
+        campaign_id = str(item.get("id", ""))
+        if not campaign_id:
+            continue
+        prev = latest_by_id.get(campaign_id)
+        prev_closed = str(prev.get("closed_at", "")) if prev else ""
+        cur_closed = str(item.get("closed_at", ""))
+        if prev is None or cur_closed >= prev_closed:
+            latest_by_id[campaign_id] = item
+
+    return sorted(latest_by_id.values(), key=lambda row: str(row.get("closed_at", "")), reverse=True)
+
+
+def normalize_recently_deleted_record(record: dict, campaign_year: int) -> Optional[dict]:
+    deleted_at = parse_time(record.get("deleted_at"))
+    if not deleted_at:
+        return None
+
+    restore_deadline = parse_time(record.get("restore_deadline"))
+    if not restore_deadline:
+        restore_deadline = deleted_at + timedelta(days=ARCHIVE_RETENTION_DAYS)
+
+    return {
+        "id": str(record.get("id", "")),
+        "year": campaign_record_year(record, campaign_year),
+        "label": str(record.get("label", "未命名場次")),
+        "status": "closed",
+        "started_at": str(record.get("started_at", now_utc().isoformat())),
+        "closed_at": record.get("closed_at"),
+        "summary": record.get("summary"),
+        "deleted_at": deleted_at.isoformat(),
+        "restore_deadline": restore_deadline.isoformat(),
+    }
+
+
+def recently_deleted_for_year(campaign_year: int) -> List[dict]:
+    if db.enabled:
+        state = db.get_campaign_state(campaign_year)
+        rows = state.get("recently_deleted_campaigns", []) if isinstance(state, dict) else []
+        records = [dict(item) for item in rows if isinstance(item, dict)]
+    else:
+        records = [
+            dict(item)
+            for item in recently_deleted_campaigns
+            if campaign_record_year(item, campaign_year) == campaign_year
+        ]
+
+    latest_by_id: Dict[str, dict] = {}
+    for item in records:
+        normalized = normalize_recently_deleted_record(item, campaign_year)
+        if not normalized:
+            continue
+        campaign_id = str(normalized.get("id", ""))
+        if not campaign_id:
+            continue
+        prev = latest_by_id.get(campaign_id)
+        prev_deleted = str(prev.get("deleted_at", "")) if prev else ""
+        cur_deleted = str(normalized.get("deleted_at", ""))
+        if prev is None or cur_deleted >= prev_deleted:
+            latest_by_id[campaign_id] = normalized
+
+    return sorted(latest_by_id.values(), key=lambda row: str(row.get("deleted_at", "")), reverse=True)
+
+
+def purge_expired_recently_deleted(campaign_year: int) -> List[dict]:
+    now = now_utc()
+    active: List[dict] = []
+    for item in recently_deleted_for_year(campaign_year):
+        deadline = parse_time(item.get("restore_deadline"))
+        if not deadline:
+            continue
+        if deadline > now:
+            active.append(item)
+
+    if db.enabled:
+        db.save_campaign_state(
+            campaign_year,
+            {
+                "current_campaign": dict(current_campaign) if current_campaign and campaign_record_year(current_campaign) == campaign_year else None,
+                "campaign_history": campaign_history_for_year(campaign_year),
+                "venues": [dict(venue) for venue in venues] if current_campaign and campaign_record_year(current_campaign) == campaign_year else [],
+                "venue_projects": clone_venue_projects(venue_projects) if current_campaign and campaign_record_year(current_campaign) == campaign_year else {},
+                "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments) if current_campaign and campaign_record_year(current_campaign) == campaign_year else {},
+                "recently_deleted_campaigns": active,
+            },
+        )
+    else:
+        recently_deleted_campaigns[:] = [
+            item
+            for item in recently_deleted_campaigns
+            if campaign_record_year(item, campaign_year) != campaign_year
+        ] + [dict(item) for item in active]
+
+    return active
+
+
+def persist_campaign_state(
+    campaign_year: int,
+    history_override: Optional[List[dict]] = None,
+    deleted_override: Optional[List[dict]] = None,
+) -> None:
+    if not db.enabled:
+        return
+
+    target_year = normalize_campaign_year(campaign_year)
+    active_year = campaign_record_year(current_campaign, target_year) if current_campaign else None
+    current_payload = dict(current_campaign) if active_year == target_year else None
+    history_payload = history_override if history_override is not None else campaign_history_for_year(target_year)
+    deleted_payload = deleted_override if deleted_override is not None else recently_deleted_for_year(target_year)
+
+    db.save_campaign_state(
+        target_year,
+        {
+            "current_campaign": current_payload,
+            "campaign_history": [dict(item) for item in history_payload],
+            "venues": [dict(venue) for venue in venues] if current_payload else [],
+            "venue_projects": clone_venue_projects(venue_projects) if current_payload else {},
+            "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments) if current_payload else {},
+            "recently_deleted_campaigns": [dict(item) for item in deleted_payload],
+        },
+    )
+
+
+def restore_active_campaign_state() -> None:
+    global current_campaign
+
+    if not db.enabled:
+        return
+
+    restored = db.get_active_campaign_state()
+    if not restored:
+        return
+
+    state = restored.get("state", {}) if isinstance(restored, dict) else {}
+    current = state.get("current_campaign")
+    if not isinstance(current, dict):
+        return
+
+    current_campaign = dict(current)
+    campaign_history[:] = [
+        dict(item)
+        for item in state.get("campaign_history", [])
+        if isinstance(item, dict)
+    ]
+    recently_deleted_campaigns[:] = [
+        dict(item)
+        for item in state.get("recently_deleted_campaigns", [])
+        if isinstance(item, dict)
+    ]
+    venues[:] = [
+        {
+            "id": str(venue.get("id", "")),
+            "name": str(venue.get("name", "未命名會場")),
+            "classroom": str(venue.get("classroom", "待公布教室")),
+        }
+        for venue in state.get("venues", [])
+        if isinstance(venue, dict)
+    ]
+
+    stored_projects = state.get("venue_projects", {})
+    if isinstance(stored_projects, dict):
+        venue_projects.clear()
+        venue_projects.update(clone_venue_projects(stored_projects))
+
+    stored_judge_investments = state.get("venue_judge_investments", {})
+    if isinstance(stored_judge_investments, dict):
+        venue_judge_investments.clear()
+        venue_judge_investments.update(clone_venue_judge_investments(stored_judge_investments))
+
+
 def get_projects_data(venue_id: Optional[str] = None) -> List[dict]:
     if venue_id:
         ensure_venue_project_store(venue_id)
@@ -356,13 +629,30 @@ def get_projects_data(venue_id: Optional[str] = None) -> List[dict]:
     return aggregate
 
 
-def verified_user_store_key(identifier: str, campaign_year: int) -> str:
+def verified_user_store_key(identifier: str, campaign_year: int, campaign_id: Optional[str] = None) -> str:
+    if campaign_id:
+        return f"campaign::{campaign_id}::{identifier}"
     return f"{campaign_year}::{identifier}"
 
 
-def get_verified_user(identifier: str, campaign_year: Optional[int] = None, allow_legacy: bool = False) -> Optional[dict]:
+def get_verified_user(
+    identifier: str,
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+    allow_legacy: bool = False,
+) -> Optional[dict]:
     if db.enabled:
-        return db.get_verified_user(identifier, campaign_year=campaign_year, allow_legacy=allow_legacy)
+        return db.get_verified_user(
+            identifier,
+            campaign_year=campaign_year,
+            campaign_id=campaign_id,
+            allow_legacy=allow_legacy,
+        )
+
+    if campaign_id is not None:
+        scoped = verified_users.get(verified_user_store_key(identifier, campaign_year or get_member_scope_year(), campaign_id=campaign_id))
+        if scoped:
+            return scoped
 
     if campaign_year is not None:
         scoped = verified_users.get(verified_user_store_key(identifier, campaign_year))
@@ -373,12 +663,14 @@ def get_verified_user(identifier: str, campaign_year: Optional[int] = None, allo
     return None
 
 
-def list_verified_users(campaign_year: Optional[int] = None) -> List[dict]:
+def list_verified_users(campaign_year: Optional[int] = None, campaign_id: Optional[str] = None) -> List[dict]:
     if db.enabled:
-        return db.list_verified_users(campaign_year=campaign_year)
+        return db.list_verified_users(campaign_year=campaign_year, campaign_id=campaign_id)
 
     rows = list(verified_users.values())
-    if campaign_year is not None:
+    if campaign_id is not None:
+        rows = [row for row in rows if row.get("campaign_id") == campaign_id]
+    elif campaign_year is not None:
         rows = [row for row in rows if row.get("campaign_year") == campaign_year]
     return sorted(rows, key=lambda u: str(u.get("identifier", "")))
 
@@ -389,9 +681,14 @@ def upsert_verified_user(
     role: str,
     access_until: datetime,
     campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
 ) -> None:
-    scope_year = get_member_scope_year(campaign_year)
-    existing = get_verified_user(identifier, campaign_year=scope_year) or {}
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    if scope_campaign_id:
+        scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year)
+    else:
+        scope_year = get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
     payload = {
         "identifier": identifier,
         "display_name": display_name,
@@ -400,62 +697,96 @@ def upsert_verified_user(
         "assigned_venue_id": existing.get("assigned_venue_id"),
         "is_voted": bool(existing.get("is_voted", False)),
         "campaign_year": scope_year,
+        "campaign_id": scope_campaign_id,
     }
 
     if db.enabled:
-        db.upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
+        db.upsert_verified_user(
+            identifier,
+            display_name,
+            role,
+            access_until,
+            campaign_year=scope_year,
+            campaign_id=scope_campaign_id,
+        )
         if payload["assigned_venue_id"]:
-            db.set_verified_user_venue(identifier, payload["assigned_venue_id"], campaign_year=scope_year)
+            db.set_verified_user_venue(
+                identifier,
+                payload["assigned_venue_id"],
+                campaign_year=scope_year,
+                campaign_id=scope_campaign_id,
+            )
         if payload["is_voted"]:
-            db.set_verified_user_voted(identifier, True, campaign_year=scope_year)
+            db.set_verified_user_voted(identifier, True, campaign_year=scope_year, campaign_id=scope_campaign_id)
         return
 
-    verified_users[verified_user_store_key(identifier, scope_year)] = payload
+    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = payload
 
 
-def update_verified_user_role(identifier: str, role: str, campaign_year: Optional[int] = None) -> None:
-    scope_year = get_member_scope_year(campaign_year)
-    existing = get_verified_user(identifier, campaign_year=scope_year)
+def update_verified_user_role(
+    identifier: str,
+    role: str,
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+) -> None:
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year) if scope_campaign_id else get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.update_verified_user_role(identifier, role, campaign_year=scope_year)
+        db.update_verified_user_role(identifier, role, campaign_year=scope_year, campaign_id=scope_campaign_id)
         return
 
     existing["role"] = role
     existing["campaign_year"] = scope_year
-    verified_users[verified_user_store_key(identifier, scope_year)] = existing
+    existing["campaign_id"] = scope_campaign_id
+    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
 
 
-def set_verified_user_venue(identifier: str, venue_id: str, campaign_year: Optional[int] = None) -> None:
-    scope_year = get_member_scope_year(campaign_year)
-    existing = get_verified_user(identifier, campaign_year=scope_year)
+def set_verified_user_venue(
+    identifier: str,
+    venue_id: str,
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+) -> None:
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year) if scope_campaign_id else get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.set_verified_user_venue(identifier, venue_id, campaign_year=scope_year)
+        db.set_verified_user_venue(identifier, venue_id, campaign_year=scope_year, campaign_id=scope_campaign_id)
         return
 
     existing["assigned_venue_id"] = venue_id
     existing["campaign_year"] = scope_year
-    verified_users[verified_user_store_key(identifier, scope_year)] = existing
+    existing["campaign_id"] = scope_campaign_id
+    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
 
 
-def set_verified_user_voted(identifier: str, voted: bool, campaign_year: Optional[int] = None) -> None:
-    scope_year = get_member_scope_year(campaign_year)
-    existing = get_verified_user(identifier, campaign_year=scope_year)
+def set_verified_user_voted(
+    identifier: str,
+    voted: bool,
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+) -> None:
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year) if scope_campaign_id else get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not existing:
         raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
 
     if db.enabled:
-        db.set_verified_user_voted(identifier, voted, campaign_year=scope_year)
+        db.set_verified_user_voted(identifier, voted, campaign_year=scope_year, campaign_id=scope_campaign_id)
         return
 
     existing["is_voted"] = voted
     existing["campaign_year"] = scope_year
-    verified_users[verified_user_store_key(identifier, scope_year)] = existing
+    existing["campaign_id"] = scope_campaign_id
+    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
 
 
 def create_session(user: SessionUser) -> str:
@@ -500,6 +831,34 @@ def validate_venue_exists(venue_id: str) -> None:
         raise HTTPException(status_code=400, detail="會場不存在")
 
 
+def normalize_project_names(names: List[str]) -> List[str]:
+    normalized: List[str] = []
+    for raw in names:
+        name = " ".join(str(raw).strip().split())
+        if not name:
+            continue
+        normalized.append(name)
+
+    if not normalized:
+        raise HTTPException(status_code=400, detail="至少需要 1 個專題組")
+    if len(normalized) > 20:
+        raise HTTPException(status_code=400, detail="單一會場最多可設定 20 個專題組")
+
+    seen = set()
+    deduped: List[str] = []
+    for name in normalized:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(name)
+
+    if not deduped:
+        raise HTTPException(status_code=400, detail="專題組名稱不可全部重複")
+
+    return deduped
+
+
 def build_name_identifier(display_name: str) -> str:
     # Use display name as the account identity for judge-only quick login.
     return f"name::{display_name.lower()}"
@@ -522,21 +881,26 @@ def ensure_system_active() -> None:
 
 def reset_investment_round_state() -> None:
     scope_year = get_member_scope_year()
+    scope_campaign_id = get_member_scope_campaign_id()
     for venue_id in list(venue_projects.keys()):
         venue_projects[venue_id] = clone_default_projects()
         venue_judge_investments[venue_id] = {}
 
-    for account in list_verified_users(campaign_year=scope_year):
+    for account in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id):
         if normalize_role(account.get("role", "judge")) == "judge":
             identifier = str(account.get("identifier", ""))
             if not identifier:
                 continue
-            set_verified_user_voted(identifier, False, campaign_year=scope_year)
-            set_verified_user_venue(identifier, "", campaign_year=scope_year)
+            set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
+            set_verified_user_venue(identifier, "", campaign_year=scope_year, campaign_id=scope_campaign_id)
+
+    if is_system_active():
+        persist_campaign_state(scope_year)
 
 
 def build_campaign_summary() -> dict:
     scope_year = get_member_scope_year()
+    scope_campaign_id = get_member_scope_campaign_id()
     venue_summaries = []
     for venue in venues:
         venue_id = str(venue["id"])
@@ -545,7 +909,7 @@ def build_campaign_summary() -> dict:
         judge_count = len(
             [
                 user
-                for user in list_verified_users(campaign_year=scope_year)
+                for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
                 if normalize_role(user.get("role", "judge")) == "judge"
                 and user.get("assigned_venue_id") == venue_id
             ]
@@ -553,7 +917,7 @@ def build_campaign_summary() -> dict:
         locked_count = len(
             [
                 user
-                for user in list_verified_users(campaign_year=scope_year)
+                for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
                 if normalize_role(user.get("role", "judge")) == "judge"
                 and user.get("assigned_venue_id") == venue_id
                 and bool(user.get("is_voted", False))
@@ -587,16 +951,61 @@ def serialize_campaign(record: dict) -> SystemCampaignResponse:
     )
 
 
+def serialize_recently_deleted_campaign(record: dict) -> RecentlyDeletedCampaignResponse:
+    deadline = parse_time(record.get("restore_deadline")) or now_utc()
+    remaining_seconds = max(0.0, (deadline - now_utc()).total_seconds())
+    days_remaining = int(math.ceil(remaining_seconds / 86400.0)) if remaining_seconds > 0 else 0
+
+    return RecentlyDeletedCampaignResponse(
+        id=str(record.get("id", "")),
+        year=campaign_record_year(record),
+        label=str(record.get("label", "未命名場次")),
+        status="closed",
+        started_at=str(record.get("started_at", now_utc().isoformat())),
+        closed_at=record.get("closed_at"),
+        summary=record.get("summary"),
+        deleted_at=str(record.get("deleted_at", now_utc().isoformat())),
+        restore_deadline=str(record.get("restore_deadline", deadline.isoformat())),
+        days_remaining=days_remaining,
+    )
+
+
 def campaigns_grouped_by_year() -> Dict[str, List[SystemCampaignResponse]]:
     grouped: Dict[str, List[SystemCampaignResponse]] = {}
 
     all_records: List[dict] = []
-    all_records.extend(campaign_history)
-    if current_campaign:
-        all_records.append(current_campaign)
+    if db.enabled:
+        for state in db.list_campaign_states():
+            for record in state.get("campaign_history", []):
+                if isinstance(record, dict):
+                    all_records.append(dict(record))
+    else:
+        all_records.extend(campaign_history)
+
+    # Historical archives should only show closed, already archived campaigns.
+    all_records = [record for record in all_records if str(record.get("status", "")) == "closed"]
+
+    latest_by_id: Dict[str, dict] = {}
+    for record in all_records:
+        campaign_id = str(record.get("id", ""))
+        if not campaign_id:
+            continue
+
+        existing = latest_by_id.get(campaign_id)
+        if not existing:
+            latest_by_id[campaign_id] = record
+            continue
+
+        existing_closed = str(existing.get("closed_at", ""))
+        record_closed = str(record.get("closed_at", ""))
+        existing_started = str(existing.get("started_at", ""))
+        record_started = str(record.get("started_at", ""))
+
+        if (record_closed, record_started) >= (existing_closed, existing_started):
+            latest_by_id[campaign_id] = record
 
     sorted_records = sorted(
-        all_records,
+        latest_by_id.values(),
         key=lambda item: str(item.get("started_at", "")),
         reverse=True,
     )
@@ -604,6 +1013,44 @@ def campaigns_grouped_by_year() -> Dict[str, List[SystemCampaignResponse]]:
     for record in sorted_records:
         year_key = str(record.get("year", now_utc().year))
         grouped.setdefault(year_key, []).append(serialize_campaign(record))
+
+    return grouped
+
+
+def recently_deleted_grouped_by_year() -> Dict[str, List[RecentlyDeletedCampaignResponse]]:
+    grouped: Dict[str, List[RecentlyDeletedCampaignResponse]] = {}
+
+    if db.enabled:
+        for state in db.list_campaign_states():
+            raw_year = state.get("year")
+            try:
+                year = normalize_campaign_year(int(raw_year))
+            except (TypeError, ValueError):
+                continue
+
+            for record in purge_expired_recently_deleted(year):
+                year_key = str(campaign_record_year(record, year))
+                grouped.setdefault(year_key, []).append(serialize_recently_deleted_campaign(record))
+    else:
+        retained: List[dict] = []
+        for record in recently_deleted_campaigns:
+            normalized = normalize_recently_deleted_record(record, campaign_record_year(record))
+            if not normalized:
+                continue
+            deadline = parse_time(normalized.get("restore_deadline"))
+            if not deadline or deadline <= now_utc():
+                continue
+            retained.append(normalized)
+            year_key = str(campaign_record_year(normalized))
+            grouped.setdefault(year_key, []).append(serialize_recently_deleted_campaign(normalized))
+        recently_deleted_campaigns[:] = retained
+
+    for year_key in grouped:
+        grouped[year_key] = sorted(
+            grouped[year_key],
+            key=lambda item: item.deleted_at,
+            reverse=True,
+        )
 
     return grouped
 
@@ -639,7 +1086,7 @@ def auth_me(user: SessionUser = Depends(get_current_user)):
 
 @app.get("/api/judges/status", response_model=JudgeStatusResponse)
 def judge_status(user: SessionUser = Depends(require_roles("judge", "admin"))):
-    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者資料")
 
@@ -650,12 +1097,13 @@ def judge_status(user: SessionUser = Depends(require_roles("judge", "admin"))):
         assigned_venue_id=record.get("assigned_venue_id"),
         is_voted=bool(record.get("is_voted", False)),
         campaign_year=record.get("campaign_year"),
+        campaign_id=record.get("campaign_id"),
     )
 
 
 @app.get("/api/judges/my-investment", response_model=MyInvestmentResponse)
 def get_my_investment(user: SessionUser = Depends(require_roles("judge"))):
-    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者資料")
 
@@ -666,6 +1114,7 @@ def get_my_investment(user: SessionUser = Depends(require_roles("judge"))):
             investments={},
             is_voted=bool(record.get("is_voted", False)),
             campaign_year=record.get("campaign_year"),
+            campaign_id=record.get("campaign_id"),
         )
 
     ensure_venue_project_store(venue_id)
@@ -675,6 +1124,7 @@ def get_my_investment(user: SessionUser = Depends(require_roles("judge"))):
         investments={project_id: float(amount) for project_id, amount in saved.items()},
         is_voted=bool(record.get("is_voted", False)),
         campaign_year=record.get("campaign_year"),
+        campaign_id=record.get("campaign_id"),
     )
 
 
@@ -682,7 +1132,8 @@ def get_my_investment(user: SessionUser = Depends(require_roles("judge"))):
 def login_with_identifier(data: IdentifierRequest):
     identifier, _ = detect_identifier_type(data.identifier)
     scope_year = get_member_scope_year()
-    record = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
+    scope_campaign_id = get_member_scope_campaign_id()
+    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
     if not record:
         raise HTTPException(status_code=404, detail="帳號尚未驗證，請先取得驗證碼")
 
@@ -698,9 +1149,10 @@ def login_with_identifier(data: IdentifierRequest):
         role=normalized_role,
         access_until=refreshed_until,
         campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
     )
 
-    current_record = get_verified_user(identifier, campaign_year=scope_year) or record
+    current_record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or record
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
@@ -708,6 +1160,7 @@ def login_with_identifier(data: IdentifierRequest):
         display_name=str(current_record.get("display_name", "未命名使用者")),
         venue_id=current_record.get("assigned_venue_id"),
         campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -718,13 +1171,14 @@ def login_with_name(data: NameLoginRequest):
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
     scope_year = get_member_scope_year()
-    existing = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
+    scope_campaign_id = get_member_scope_campaign_id()
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
 
     role = normalize_role(existing.get("role") if existing else "judge")
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
+    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
 
-    record = get_verified_user(identifier, campaign_year=scope_year) or {}
+    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
@@ -732,6 +1186,7 @@ def login_with_name(data: NameLoginRequest):
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
         campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -763,6 +1218,7 @@ def request_verification(data: VerificationRequest):
 def verify_identifier(data: VerificationConfirmRequest):
     identifier, _ = detect_identifier_type(data.identifier)
     scope_year = get_member_scope_year()
+    scope_campaign_id = get_member_scope_campaign_id()
     code_data = verification_code_store.get(identifier)
     if not code_data:
         raise HTTPException(status_code=400, detail="請先取得驗證碼")
@@ -779,16 +1235,16 @@ def verify_identifier(data: VerificationConfirmRequest):
         raise HTTPException(status_code=400, detail="驗證成功後必須填寫使用者姓名")
 
     verification_code_store.pop(identifier, None)
-    existing = get_verified_user(identifier, campaign_year=scope_year, allow_legacy=True)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
     if existing and existing.get("role") in {"admin", "judge", "guest"}:
         role = normalize_role(existing.get("role"))
     else:
         role = "judge"
 
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year)
+    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
 
-    record = get_verified_user(identifier, campaign_year=scope_year) or {}
+    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
@@ -796,6 +1252,7 @@ def verify_identifier(data: VerificationConfirmRequest):
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
         campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -815,7 +1272,7 @@ def join_venue(
 ):
     ensure_system_active()
     validate_venue_exists(data.venue_id)
-    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者驗證資料")
 
@@ -824,14 +1281,14 @@ def join_venue(
         raise HTTPException(status_code=400, detail="一位評審只能加入一個會場")
 
     if not assigned:
-        set_verified_user_venue(user.identifier, data.venue_id, campaign_year=user.campaign_year)
+        set_verified_user_venue(user.identifier, data.venue_id, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
 
     return {"success": True, "message": "加入會場成功", "venue_id": data.venue_id}
 
 
 @app.post("/api/judges/leave-venue")
 def leave_venue(user: SessionUser = Depends(require_roles("judge"))):
-    record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+    record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者驗證資料")
     if bool(record.get("is_voted", False)):
@@ -851,14 +1308,17 @@ def leave_venue(user: SessionUser = Depends(require_roles("judge"))):
                 )
 
     if db.enabled:
-        db.set_verified_user_venue(user.identifier, "", campaign_year=user.campaign_year)
+        db.set_verified_user_venue(user.identifier, "", campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     else:
         record["assigned_venue_id"] = None
         record["is_voted"] = False
         record["campaign_year"] = get_member_scope_year(user.campaign_year)
         verified_users[verified_user_store_key(user.identifier, get_member_scope_year(user.campaign_year))] = record
 
-    set_verified_user_voted(user.identifier, False, campaign_year=user.campaign_year)
+    set_verified_user_voted(user.identifier, False, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
+
+    if is_system_active():
+        persist_campaign_state(get_member_scope_year(user.campaign_year))
 
     return {"success": True, "message": "已離開會場"}
 
@@ -887,7 +1347,7 @@ def submit_investment(
         )
 
     if user.role == "judge":
-        record = get_verified_user(user.identifier, campaign_year=user.campaign_year)
+        record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
         if not record:
             raise HTTPException(status_code=404, detail="找不到評審帳號資料")
         venue_id = record.get("assigned_venue_id")
@@ -922,7 +1382,10 @@ def submit_investment(
             project["total_investment"] += data.investments[project["id"]]
 
     if user.role == "judge":
-        set_verified_user_voted(user.identifier, True, campaign_year=user.campaign_year)
+        set_verified_user_voted(user.identifier, True, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
+
+    if is_system_active():
+        persist_campaign_state(get_member_scope_year(user.campaign_year))
 
     updated_projects = get_projects_data(venue_id)
     return SubmitInvestmentResponse(
@@ -934,7 +1397,11 @@ def submit_investment(
 
 @app.get("/api/judges")
 def get_judges():
-    judge_users = [user for user in list_verified_users(campaign_year=get_member_scope_year()) if user.get("role") == "judge"]
+    judge_users = [
+        user
+        for user in list_verified_users(campaign_year=get_member_scope_year(), campaign_id=get_member_scope_campaign_id())
+        if user.get("role") == "judge"
+    ]
     response = []
     for user in judge_users:
         response.append(
@@ -954,7 +1421,127 @@ def get_admin_system_state(user: SessionUser = Depends(require_roles("admin"))):
     return AdminSystemStateResponse(
         current_campaign=serialize_campaign(current_campaign) if current_campaign else None,
         campaigns_by_year=campaigns_grouped_by_year(),
+        recently_deleted_by_year=recently_deleted_grouped_by_year(),
     )
+
+
+@app.delete("/api/admin/system/archives/{campaign_id}")
+def delete_archived_campaign(
+    campaign_id: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    target_year = normalize_campaign_year(year)
+
+    history = campaign_history_for_year(target_year)
+    target = next((item for item in history if str(item.get("id", "")) == campaign_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="找不到指定封存紀錄")
+    if str(target.get("status", "")) != "closed":
+        raise HTTPException(status_code=400, detail="僅能刪除已封存場次")
+
+    next_history = [item for item in history if str(item.get("id", "")) != campaign_id]
+    deleted_at = now_utc()
+    deleted_record = dict(target)
+    deleted_record["deleted_at"] = deleted_at.isoformat()
+    deleted_record["restore_deadline"] = (deleted_at + timedelta(days=ARCHIVE_RETENTION_DAYS)).isoformat()
+
+    next_deleted = [item for item in purge_expired_recently_deleted(target_year) if str(item.get("id", "")) != campaign_id]
+    next_deleted.append(deleted_record)
+
+    if db.enabled:
+        persist_campaign_state(target_year, history_override=next_history, deleted_override=next_deleted)
+    else:
+        campaign_history[:] = [item for item in campaign_history if campaign_record_year(item, target_year) != target_year] + [
+            dict(item) for item in next_history
+        ]
+        recently_deleted_campaigns[:] = [
+            item
+            for item in recently_deleted_campaigns
+            if campaign_record_year(item, target_year) != target_year
+        ] + [dict(item) for item in next_deleted]
+
+    return {
+        "success": True,
+        "message": "封存紀錄已移至最近刪除（30 天內可還原）",
+        "restore_deadline": deleted_record["restore_deadline"],
+    }
+
+
+@app.post("/api/admin/system/archives/{campaign_id}/restore", response_model=SystemCampaignResponse)
+def restore_archived_campaign(
+    campaign_id: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    target_year = normalize_campaign_year(year)
+
+    deleted = purge_expired_recently_deleted(target_year)
+    target = next((item for item in deleted if str(item.get("id", "")) == campaign_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="找不到可還原的刪除紀錄，或已超過 30 天")
+
+    restored = dict(target)
+    restored.pop("deleted_at", None)
+    restored.pop("restore_deadline", None)
+    restored["status"] = "closed"
+
+    history = campaign_history_for_year(target_year)
+    history = [item for item in history if str(item.get("id", "")) != campaign_id]
+    history.append(restored)
+
+    remaining_deleted = [item for item in deleted if str(item.get("id", "")) != campaign_id]
+
+    if db.enabled:
+        persist_campaign_state(target_year, history_override=history, deleted_override=remaining_deleted)
+    else:
+        campaign_history[:] = [item for item in campaign_history if campaign_record_year(item, target_year) != target_year] + [
+            dict(item) for item in history
+        ]
+        recently_deleted_campaigns[:] = [
+            item
+            for item in recently_deleted_campaigns
+            if not (
+                campaign_record_year(item, target_year) == target_year
+                and str(item.get("id", "")) == campaign_id
+            )
+        ] + [dict(item) for item in remaining_deleted]
+
+    return serialize_campaign(restored)
+
+
+@app.delete("/api/admin/system/recently-deleted/{campaign_id}")
+@app.delete("/api/admin/system/archives/{campaign_id}/permanent-delete")
+def permanent_delete_recently_deleted_campaign(
+    campaign_id: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    target_year = normalize_campaign_year(year)
+
+    deleted = purge_expired_recently_deleted(target_year)
+    target = next((item for item in deleted if str(item.get("id", "")) == campaign_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="找不到可刪除的紀錄")
+
+    remaining_deleted = [item for item in deleted if str(item.get("id", "")) != campaign_id]
+
+    if db.enabled:
+        persist_campaign_state(target_year, history_override=campaign_history_for_year(target_year), deleted_override=remaining_deleted)
+    else:
+        recently_deleted_campaigns[:] = [
+            item
+            for item in recently_deleted_campaigns
+            if not (
+                campaign_record_year(item, target_year) == target_year
+                and str(item.get("id", "")) == campaign_id
+            )
+        ]
+
+    return {"success": True, "message": "紀錄已永久刪除"}
 
 
 @app.post("/api/admin/system/start", response_model=SystemCampaignResponse)
@@ -968,7 +1555,7 @@ def start_system_campaign(
     if is_system_active():
         raise HTTPException(status_code=400, detail="目前已有啟動中的專題發表場次，請先關閉")
 
-    campaign_year = normalize_campaign_year(data.year)
+    campaign_year = normalize_campaign_year(now_utc().year)
 
     default_label = f"{campaign_year} 專題模擬投資評分"
     label = (data.label or default_label).strip()
@@ -988,6 +1575,7 @@ def start_system_campaign(
     }
 
     reset_investment_round_state()
+    persist_campaign_state(campaign_year)
     return serialize_campaign(current_campaign)
 
 
@@ -998,6 +1586,8 @@ def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
 
     if not current_campaign or current_campaign.get("status") != "active":
         raise HTTPException(status_code=400, detail="目前沒有啟動中的場次可關閉")
+
+    closing_year = campaign_record_year(current_campaign)
 
     closed = dict(current_campaign)
     closed["status"] = "closed"
@@ -1011,6 +1601,9 @@ def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
     venue_judge_investments.clear()
 
     current_campaign = None
+    prev_history = campaign_history_for_year(closing_year)
+    full_history = [h for h in prev_history if str(h.get("id", "")) != str(closed["id"])] + [closed]
+    persist_campaign_state(closing_year, history_override=full_history)
 
     return serialize_campaign(closed)
 
@@ -1020,7 +1613,7 @@ def get_admin_overview(user: SessionUser = Depends(require_roles("admin"))):
     _ = user
     return AdminOverviewResponse(
         active_sessions=len(auth_sessions),
-        verified_users=list_verified_users(campaign_year=get_member_scope_year()),
+        verified_users=list_verified_users(campaign_year=get_member_scope_year(), campaign_id=get_member_scope_campaign_id()),
         venues=[build_venue_response(venue) for venue in venues],
     )
 
@@ -1032,7 +1625,7 @@ def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_r
     name = data.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="會場名稱不可為空")
-    classroom = (data.classroom or "").strip() or "待公布教室"
+    classroom = (data.classroom or "").strip() or name
 
     venue_id = slugify(name)
     existing_ids = {venue["id"] for venue in venues}
@@ -1045,6 +1638,7 @@ def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_r
     venue = {"id": venue_id, "name": name, "classroom": classroom}
     venues.append(venue)
     ensure_venue_project_store(venue_id)
+    persist_campaign_state(get_member_scope_year())
     return build_venue_response(venue)
 
 
@@ -1069,21 +1663,60 @@ def update_venue(
                     raise HTTPException(status_code=400, detail="教室名稱不可為空")
                 venue["classroom"] = classroom
             venue.setdefault("classroom", "待公布教室")
+            persist_campaign_state(get_member_scope_year())
             return build_venue_response(venue)
 
     raise HTTPException(status_code=404, detail="找不到指定會場")
+
+
+@app.patch("/api/admin/venues/{venue_id}/projects", response_model=VenueResponse)
+def update_venue_projects(
+    venue_id: str,
+    data: VenueProjectsUpdateRequest,
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    _ = user
+    ensure_system_active()
+    validate_venue_exists(venue_id)
+
+    project_names = normalize_project_names(data.project_names)
+    venue_projects[venue_id] = [
+        {
+            "id": f"proj_{index + 1:03d}",
+            "name": name,
+            "total_investment": 0,
+        }
+        for index, name in enumerate(project_names)
+    ]
+    venue_judge_investments[venue_id] = {}
+
+    scope_year = get_member_scope_year()
+    scope_campaign_id = get_member_scope_campaign_id()
+    for account in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id):
+        if normalize_role(account.get("role", "judge")) != "judge":
+            continue
+        if account.get("assigned_venue_id") != venue_id:
+            continue
+        identifier = str(account.get("identifier", ""))
+        if identifier:
+            set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
+
+    venue = next((item for item in venues if item["id"] == venue_id), None)
+    if not venue:
+        raise HTTPException(status_code=404, detail="找不到指定會場")
+    persist_campaign_state(get_member_scope_year())
+    return build_venue_response(venue)
 
 
 @app.delete("/api/admin/venues/{venue_id}")
 def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin"))):
     _ = user
     ensure_system_active()
-    if len(venues) <= 1:
-        raise HTTPException(status_code=400, detail="至少需保留一個會場")
 
+    scope_campaign_id = get_member_scope_campaign_id()
     assigned_users = [
         u
-        for u in list_verified_users(campaign_year=get_member_scope_year())
+        for u in list_verified_users(campaign_year=get_member_scope_year(), campaign_id=scope_campaign_id)
         if u.get("role") == "judge" and u.get("assigned_venue_id") == venue_id
     ]
     if assigned_users:
@@ -1095,18 +1728,22 @@ def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin
 
     venues[:] = next_venues
     venue_projects.pop(venue_id, None)
+    venue_judge_investments.pop(venue_id, None)
+    persist_campaign_state(get_member_scope_year())
     return {"success": True, "message": "會場已刪除"}
 
 
 @app.get("/api/admin/members")
 def list_members(
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
     members = []
-    for account in list_verified_users(campaign_year=scope_year):
+    for account in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id):
         if str(account.get("identifier", "")).startswith("name::") and normalize_role(account.get("role", "judge")) == "judge":
             members.append(
                 {
@@ -1116,26 +1753,29 @@ def list_members(
                     "assigned_venue_id": account.get("assigned_venue_id"),
                     "is_voted": bool(account.get("is_voted", False)),
                     "campaign_year": scope_year,
+                    "campaign_id": scope_campaign_id,
                 }
             )
-    return {"members": members, "year": scope_year}
+    return {"members": members, "year": scope_year, "campaign_id": scope_campaign_id}
 
 
 @app.post("/api/admin/members")
 def create_member(
     data: MemberCreateRequest,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    if get_verified_user(identifier, campaign_year=scope_year):
+    if get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id):
         raise HTTPException(status_code=400, detail="此姓名成員已存在")
 
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, data.role, access_until, campaign_year=scope_year)
+    upsert_verified_user(identifier, display_name, data.role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
     return {
         "success": True,
         "member": {
@@ -1145,6 +1785,7 @@ def create_member(
             "assigned_venue_id": None,
             "is_voted": False,
             "campaign_year": scope_year,
+            "campaign_id": scope_campaign_id,
         },
     }
 
@@ -1154,18 +1795,20 @@ def update_member(
     identifier: str,
     data: MemberUpdateRequest,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
     next_display_name = normalize_display_name(data.display_name) if data.display_name is not None else str(account.get("display_name", ""))
     next_role = data.role or normalize_role(account.get("role", "judge"))
     access_until = parse_time(account.get("access_until")) or (now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS))
-    upsert_verified_user(identifier, next_display_name, next_role, access_until, campaign_year=scope_year)
+    upsert_verified_user(identifier, next_display_name, next_role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
     return {"success": True, "message": "成員資料已更新"}
 
 
@@ -1173,15 +1816,17 @@ def update_member(
 def unlock_member(
     identifier: str,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
-    set_verified_user_voted(identifier, False, campaign_year=scope_year)
+    set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
     return {"success": True, "message": "已解除鎖定，可再次上傳"}
 
 
@@ -1190,11 +1835,13 @@ def update_member_status(
     identifier: str,
     data: MemberStatusUpdateRequest,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
@@ -1205,14 +1852,14 @@ def update_member_status(
         venue_id = data.assigned_venue_id.strip()
         if venue_id:
             validate_venue_exists(venue_id)
-            set_verified_user_venue(identifier, venue_id, campaign_year=scope_year)
+            set_verified_user_venue(identifier, venue_id, campaign_year=scope_year, campaign_id=scope_campaign_id)
         else:
-            set_verified_user_venue(identifier, "", campaign_year=scope_year)
+            set_verified_user_venue(identifier, "", campaign_year=scope_year, campaign_id=scope_campaign_id)
 
     if data.is_voted is not None:
-        set_verified_user_voted(identifier, data.is_voted, campaign_year=scope_year)
+        set_verified_user_voted(identifier, data.is_voted, campaign_year=scope_year, campaign_id=scope_campaign_id)
 
-    updated = get_verified_user(identifier, campaign_year=scope_year) or {}
+    updated = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
     return {
         "success": True,
         "member": {
@@ -1222,6 +1869,7 @@ def update_member_status(
             "assigned_venue_id": updated.get("assigned_venue_id"),
             "is_voted": bool(updated.get("is_voted", False)),
             "campaign_year": scope_year,
+            "campaign_id": scope_campaign_id,
         },
     }
 
@@ -1230,19 +1878,21 @@ def update_member_status(
 def delete_member(
     identifier: str,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
-    scope_year = get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year)
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
     if db.enabled:
-        doc_id = db._identity_doc_id(identifier, scope_year)
+        doc_id = db._identity_doc_id(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
         db._client.collection("verified_users").document(doc_id).delete()
     else:
-        verified_users.pop(verified_user_store_key(identifier, scope_year), None)
+        verified_users.pop(verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id), None)
 
     remove_sessions_for_identifier(identifier)
     return {"success": True, "message": "成員已刪除"}
@@ -1252,11 +1902,14 @@ def delete_member(
 def authorize_user(
     data: AuthorizeJudgeRequest,
     year: Optional[int] = Query(default=None),
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("admin")),
 ):
     _ = user
     identifier = data.identifier.strip().lower()
-    update_verified_user_role(identifier, data.role, campaign_year=get_member_scope_year(year))
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+    update_verified_user_role(identifier, data.role, campaign_year=scope_year, campaign_id=scope_campaign_id)
     return {
         "success": True,
         "message": f"帳號 {identifier} 已授權為 {data.role}",

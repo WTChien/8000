@@ -200,6 +200,32 @@ body {
   font-size: 13px;
 }
 
+.admin-history-row-deleted {
+  border-left: 3px solid rgba(239, 68, 68, 0.55);
+  padding-left: 10px;
+}
+
+.admin-history-actions {
+  margin-top: 8px;
+}
+
+.admin-history-actions button {
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 9px;
+  background: rgba(239, 68, 68, 0.14);
+  color: #fecaca;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.admin-history-row-deleted .admin-history-actions button {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.14);
+  color: #bbf7d0;
+}
+
 .admin-member-toolbar {
   margin-bottom: 18px;
 }
@@ -220,6 +246,108 @@ body {
   padding-top: 0;
   padding-bottom: 0;
   background: rgba(15, 23, 42, 0.35);
+}
+
+.admin-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(2, 6, 23, 0.7);
+  backdrop-filter: blur(2px);
+}
+
+.admin-modal {
+  width: min(900px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid rgba(234, 179, 8, 0.32);
+  border-radius: 16px;
+  padding: 24px;
+  background:
+    radial-gradient(580px 220px at 12% -10%, rgba(34, 197, 94, 0.12), transparent 72%),
+    radial-gradient(520px 220px at 88% -14%, rgba(234, 179, 8, 0.12), transparent 70%),
+    #0f172a;
+  box-shadow: 0 22px 54px rgba(2, 6, 23, 0.52);
+}
+
+.admin-confirm-modal {
+  width: min(520px, 100%);
+}
+
+.admin-confirm-modal .submit-button {
+  width: auto;
+  min-width: 150px;
+  background: linear-gradient(135deg, #ef4444, #f97316);
+}
+
+.admin-modal h3 {
+  margin-bottom: 8px;
+}
+
+.admin-modal-note {
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+}
+
+.admin-modal-textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.admin-member-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.admin-member-check-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.admin-member-check-item input {
+  width: 16px;
+  height: 16px;
+}
+
+.admin-member-check-item span {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.admin-member-check-item small {
+  color: var(--text-secondary);
+}
+
+.admin-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.admin-modal-actions button:not(.submit-button) {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-primary);
+  font-weight: 700;
+  padding: 14px 16px;
+  cursor: pointer;
 }
 
 .nav-buttons button {
@@ -374,6 +502,321 @@ body {
   outline: none;
   border-color: var(--accent-invest);
   box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.2);
+}
+
+/* ── Venue horizontal grid ── */
+.venue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.venue-grid-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.45);
+  transition: border-color 0.24s ease, transform 0.24s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.venue-grid-card:hover {
+  border-color: rgba(234, 179, 8, 0.52);
+  transform: translateY(-1px);
+}
+
+/* ── Member badge list inside venue card ── */
+.venue-member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.venue-no-member {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.venue-member-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.venue-member-badge.editable {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.venue-member-badge.locked {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.venue-member-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.venue-member-badge.editable .venue-member-dot {
+  background: #22c55e;
+}
+
+.venue-member-badge.locked .venue-member-dot {
+  background: #ef4444;
+}
+
+.venue-member-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.venue-member-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.venue-member-btns {
+  display: flex;
+  gap: 4px;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.venue-member-btns button {
+  border: none;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.venue-member-btns button:hover {
+  background: rgba(234, 179, 8, 0.18);
+  color: var(--text-primary);
+}
+
+.venue-member-btns button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.venue-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.venue-card-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+}
+
+.venue-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.venue-card-actions button {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-primary);
+  font-weight: 700;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+  white-space: nowrap;
+}
+
+.venue-card-actions button:hover {
+  border-color: var(--accent-invest);
+  transform: translateY(-1px);
+}
+
+.venue-card-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+
+/* ── Venue card: project tags ── */
+.venue-project-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.venue-project-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  color: var(--accent-invest);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Edit modal: selected member chips ── */
+.setup-selected-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  min-height: 32px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.setup-member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 12px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.setup-member-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.setup-member-chip button:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: var(--text-primary);
+}
+
+/* ── Venue view modal ── */
+.venue-view-modal {
+  max-width: 620px !important;
+}
+
+.venue-view-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.venue-view-title-row h3 {
+  margin-bottom: 0;
+}
+
+.venue-view-classroom {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.venue-view-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.venue-view-project-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1.4fr) 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.venue-view-project-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.venue-view-bar-wrap {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  overflow: hidden;
+}
+
+.venue-view-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-invest);
+  transition: width 0.4s ease;
+}
+
+.venue-view-project-amount {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-invest);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.venue-view-total-row {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.venue-view-total-row span:last-child {
+  color: var(--accent-invest);
 }
 
 .investment-item {
