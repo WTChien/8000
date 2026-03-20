@@ -174,6 +174,7 @@ class JudgeResponse(BaseModel):
 
 class InvestmentData(BaseModel):
     investments: Dict[str, float]
+    lock_submission: bool = True
 
 
 class SubmitInvestmentResponse(BaseModel):
@@ -902,9 +903,36 @@ def build_campaign_summary() -> dict:
     scope_year = get_member_scope_year()
     scope_campaign_id = get_member_scope_campaign_id()
     venue_summaries = []
+    overall_project_rows: List[dict] = []
+
     for venue in venues:
         venue_id = str(venue["id"])
+        venue_name = str(venue.get("name", venue_id))
         projects_data = get_projects_data(venue_id)
+        ranked_projects = sorted(
+            [
+                {
+                    "project_id": str(item.get("id", "")),
+                    "project_name": str(item.get("name", "未命名專題")),
+                    "total_investment": float(item.get("total_investment", 0)),
+                }
+                for item in projects_data
+            ],
+            key=lambda item: item["total_investment"],
+            reverse=True,
+        )
+        for idx, project in enumerate(ranked_projects, start=1):
+            project["rank"] = idx
+            overall_project_rows.append(
+                {
+                    "venue_id": venue_id,
+                    "venue_name": venue_name,
+                    "project_id": project["project_id"],
+                    "project_name": project["project_name"],
+                    "total_investment": project["total_investment"],
+                }
+            )
+
         total_investment = sum(float(item.get("total_investment", 0)) for item in projects_data)
         judge_count = len(
             [
@@ -926,17 +954,99 @@ def build_campaign_summary() -> dict:
         venue_summaries.append(
             {
                 "venue_id": venue_id,
-                "venue_name": str(venue.get("name", venue_id)),
+                "venue_name": venue_name,
                 "total_investment": total_investment,
                 "judge_count": judge_count,
                 "locked_count": locked_count,
+                "projects": ranked_projects,
             }
         )
+
+    overall_project_rows.sort(key=lambda item: item["total_investment"], reverse=True)
+    for idx, row in enumerate(overall_project_rows, start=1):
+        row["rank"] = idx
 
     return {
         "venues": venue_summaries,
         "overall_total_investment": sum(item["total_investment"] for item in venue_summaries),
+        "overall_project_ranking": overall_project_rows,
     }
+
+
+def normalize_campaign_summary(summary: Optional[dict]) -> Optional[dict]:
+    if not isinstance(summary, dict):
+        return summary
+
+    normalized = dict(summary)
+    venues_data = normalized.get("venues")
+    if not isinstance(venues_data, list):
+        return normalized
+
+    normalized_venues: List[dict] = []
+    derived_overall_rows: List[dict] = []
+
+    for venue in venues_data:
+        if not isinstance(venue, dict):
+            continue
+
+        venue_copy = dict(venue)
+        venue_id = str(venue_copy.get("venue_id", ""))
+        venue_name = str(venue_copy.get("venue_name", venue_id or "未命名會場"))
+        raw_projects = venue_copy.get("projects") if isinstance(venue_copy.get("projects"), list) else []
+        ranked_projects = sorted(
+            [
+                {
+                    "project_id": str(project.get("project_id", "")),
+                    "project_name": str(project.get("project_name", "未命名專題")),
+                    "total_investment": float(project.get("total_investment", 0)),
+                }
+                for project in raw_projects
+                if isinstance(project, dict)
+            ],
+            key=lambda item: item["total_investment"],
+            reverse=True,
+        )
+
+        for idx, project in enumerate(ranked_projects, start=1):
+            project["rank"] = idx
+            derived_overall_rows.append(
+                {
+                    "venue_id": venue_id,
+                    "venue_name": venue_name,
+                    "project_id": project["project_id"],
+                    "project_name": project["project_name"],
+                    "total_investment": project["total_investment"],
+                }
+            )
+
+        venue_copy["venue_id"] = venue_id
+        venue_copy["venue_name"] = venue_name
+        venue_copy["projects"] = ranked_projects
+        if venue_copy.get("total_investment") is None:
+            venue_copy["total_investment"] = sum(project["total_investment"] for project in ranked_projects)
+        normalized_venues.append(venue_copy)
+
+    normalized["venues"] = normalized_venues
+    if normalized.get("overall_total_investment") is None:
+        normalized["overall_total_investment"] = sum(float(item.get("total_investment", 0)) for item in normalized_venues)
+
+    overall_project_ranking = normalized.get("overall_project_ranking")
+    if isinstance(overall_project_ranking, list) and overall_project_ranking:
+        normalized_overall = [dict(item) for item in overall_project_ranking if isinstance(item, dict)]
+    else:
+        normalized_overall = derived_overall_rows
+
+    normalized_overall.sort(key=lambda item: float(item.get("total_investment", 0)), reverse=True)
+    for idx, row in enumerate(normalized_overall, start=1):
+        row["rank"] = idx
+        row["venue_id"] = str(row.get("venue_id", ""))
+        row["venue_name"] = str(row.get("venue_name", row["venue_id"] or "未指定"))
+        row["project_id"] = str(row.get("project_id", ""))
+        row["project_name"] = str(row.get("project_name", "未命名專題"))
+        row["total_investment"] = float(row.get("total_investment", 0))
+
+    normalized["overall_project_ranking"] = normalized_overall
+    return normalized
 
 
 def serialize_campaign(record: dict) -> SystemCampaignResponse:
@@ -947,7 +1057,7 @@ def serialize_campaign(record: dict) -> SystemCampaignResponse:
         status="active" if str(record.get("status", "active")) == "active" else "closed",
         started_at=str(record.get("started_at", now_utc().isoformat())),
         closed_at=record.get("closed_at"),
-        summary=record.get("summary"),
+        summary=normalize_campaign_summary(record.get("summary")),
     )
 
 
@@ -963,7 +1073,7 @@ def serialize_recently_deleted_campaign(record: dict) -> RecentlyDeletedCampaign
         status="closed",
         started_at=str(record.get("started_at", now_utc().isoformat())),
         closed_at=record.get("closed_at"),
-        summary=record.get("summary"),
+        summary=normalize_campaign_summary(record.get("summary")),
         deleted_at=str(record.get("deleted_at", now_utc().isoformat())),
         restore_deadline=str(record.get("restore_deadline", deadline.isoformat())),
         days_remaining=days_remaining,
@@ -1333,18 +1443,25 @@ def submit_investment(
     venue_id: Optional[str] = None
 
     for project_id, amount in data.investments.items():
-        if amount <= 0:
+        if amount < 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"每個專題的投資金額必須大於 0。專題 {project_id} 的金額為 {amount}",
+                detail=f"投資金額不可小於 0。專題 {project_id} 的金額為 {amount}",
             )
 
     total_investment = sum(data.investments.values())
-    if total_investment != total_budget:
+    if total_investment > total_budget:
         raise HTTPException(
             status_code=400,
-            detail=f"投資總額必須等於 {total_budget} 元，目前為 {total_investment} 元",
+            detail=f"投資總額不可超過 {total_budget} 元，目前為 {total_investment} 元",
         )
+
+    if data.lock_submission:
+        if total_investment != total_budget:
+            raise HTTPException(
+                status_code=400,
+                detail=f"鎖定上傳時投資總額必須等於 {total_budget} 元，目前為 {total_investment} 元",
+            )
 
     if user.role == "judge":
         record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
@@ -1381,7 +1498,7 @@ def submit_investment(
         for project in current_projects:
             project["total_investment"] += data.investments[project["id"]]
 
-    if user.role == "judge":
+    if user.role == "judge" and data.lock_submission:
         set_verified_user_voted(user.identifier, True, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
 
     if is_system_active():
@@ -1390,7 +1507,7 @@ def submit_investment(
     updated_projects = get_projects_data(venue_id)
     return SubmitInvestmentResponse(
         success=True,
-        message="投資分配成功！",
+        message="投資已上傳並鎖定。" if data.lock_submission else "投資暫存成功，可繼續調整。",
         updated_projects=[ProjectResponse(**p) for p in updated_projects],
     )
 
@@ -1449,6 +1566,19 @@ def delete_archived_campaign(
 
     next_deleted = [item for item in purge_expired_recently_deleted(target_year) if str(item.get("id", "")) != campaign_id]
     next_deleted.append(deleted_record)
+
+    # Delete associated members when deleting archived campaign
+    if db.enabled:
+        db.delete_verified_users_by_year(target_year)
+    else:
+        # Clear members from memory for the given year
+        # Keys format: "{campaign_year}::{identifier}" or "campaign::{campaign_id}::{identifier}"
+        verified_users_to_remove = [
+            key for key in list(verified_users.keys())
+            if key.startswith(f"{target_year}::")
+        ]
+        for key in verified_users_to_remove:
+            verified_users.pop(key, None)
 
     if db.enabled:
         persist_campaign_state(target_year, history_override=next_history, deleted_override=next_deleted)
@@ -1529,9 +1659,19 @@ def permanent_delete_recently_deleted_campaign(
 
     remaining_deleted = [item for item in deleted if str(item.get("id", "")) != campaign_id]
 
+    # Delete associated members when permanently deleting campaign
     if db.enabled:
+        db.delete_verified_users_by_year(target_year)
         persist_campaign_state(target_year, history_override=campaign_history_for_year(target_year), deleted_override=remaining_deleted)
     else:
+        # Clear members from memory for the given year
+        verified_users_to_remove = [
+            key for key in list(verified_users.keys())
+            if key.startswith(f"{target_year}::")
+        ]
+        for key in verified_users_to_remove:
+            verified_users.pop(key, None)
+        
         recently_deleted_campaigns[:] = [
             item
             for item in recently_deleted_campaigns
@@ -1592,7 +1732,7 @@ def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
     closed = dict(current_campaign)
     closed["status"] = "closed"
     closed["closed_at"] = now_utc().isoformat()
-    closed["summary"] = build_campaign_summary()
+    closed["summary"] = normalize_campaign_summary(build_campaign_summary())
     campaign_history.append(closed)
 
     # Venue data is runtime-only per campaign. Clear it after archive/close.
@@ -1713,23 +1853,29 @@ def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin
     _ = user
     ensure_system_active()
 
+    scope_year = get_member_scope_year()
     scope_campaign_id = get_member_scope_campaign_id()
     assigned_users = [
         u
-        for u in list_verified_users(campaign_year=get_member_scope_year(), campaign_id=scope_campaign_id)
-        if u.get("role") == "judge" and u.get("assigned_venue_id") == venue_id
+        for u in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
+        if normalize_role(u.get("role", "judge")) == "judge" and u.get("assigned_venue_id") == venue_id
     ]
-    if assigned_users:
-        raise HTTPException(status_code=400, detail="仍有評審在此會場，無法刪除")
 
     next_venues = [venue for venue in venues if venue["id"] != venue_id]
     if len(next_venues) == len(venues):
         raise HTTPException(status_code=404, detail="找不到指定會場")
 
+    for account in assigned_users:
+        identifier = str(account.get("identifier", ""))
+        if not identifier:
+            continue
+        set_verified_user_venue(identifier, "", campaign_year=scope_year, campaign_id=scope_campaign_id)
+        set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
+
     venues[:] = next_venues
     venue_projects.pop(venue_id, None)
     venue_judge_investments.pop(venue_id, None)
-    persist_campaign_state(get_member_scope_year())
+    persist_campaign_state(scope_year)
     return {"success": True, "message": "會場已刪除"}
 
 

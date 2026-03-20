@@ -99,9 +99,90 @@ Note that the development build is not optimized.
 | **API 文檔** | http://localhost:8000/docs |
 | **後端根路由** | http://localhost:8000 |
 
----
 
-## 💻 使用說明
+## 🤖 自動化測試
+
+完整的自動化測試腳本，用於驗證系統的完整業務流程。
+
+### 快速運行測試
+
+#### macOS / Linux
+```bash
+cd /Users/twinb00551172/Desktop/file/8000
+./run_test.sh
+```
+
+#### Windows
+```cmd
+cd C:\Users\...\Desktop\file\8000
+run_test.bat
+```
+
+#### Python 直接運行
+```bash
+pip install requests colorama
+python3 test_automation.py
+```
+
+### 測試包含的步驟
+
+✓ 後端服務器檢查  
+✓ Admin 登錄  
+✓ 啟動場次  
+✓ 創建會場  
+✓ 添加評審成員  
+✓ 評審加入會場  
+✓ 模擬投資決策  
+✓ 查看投資數據  
+✓ 關閉場次並顯示摘要  
+
+### 自訂配置
+
+```bash
+# 使用自訂管理員姓名
+ADMIN_DISPLAY_NAME="管理員" ./run_test.sh
+
+# 使用自訂 API 端點
+API_BASE_URL="http://your-server:8000" ./run_test.sh
+
+# 同時自訂兩者
+API_BASE_URL="http://your-server:8000" ADMIN_DISPLAY_NAME="管理員" ./run_test.sh
+```
+
+### 詳細文檔
+
+查看 [TEST_AUTOMATION.md](TEST_AUTOMATION.md) 了解更多詳情，包括：
+- 詳細的輸出示例
+- 故障排除
+- 循環測試
+- 日誌保存
+
+## �️ 場次刪除與自動清理
+
+### 刪除已封存場次
+1. 進入「場次管理」
+2. 找到已封存（Status: closed）的場次
+3. 點擊「刪除」按鈕
+4. 確認刪除操作
+
+### 自動級聯刪除
+✅ **系統會自動清理以下數據**：
+- 該年份的所有成員記錄（verified_users）
+- 成員的投票狀態
+- 成員的會場分配信息
+
+❌ **不會影響其他年份的數據**：
+- 其他年份的場次保持完整
+- 其他年份的成員數據保持完整
+
+### 驗證刪除結果
+1. 進入「成員管理」
+2. 確認該年份的成員列表已清空
+3. 檢查 Firestore Console（如使用 Firestore）
+   - 進入 `verified_users` collection
+   - 確認該 `campaign_year` 的文檔已刪除
+
+---
 
 ### 評審投資介面 (Judge UI)
 1. 點擊導航欄「評審投資介面」
@@ -116,6 +197,28 @@ Note that the development build is not optimized.
 2. 觀看實時更新的投資分配長條圖
 3. 系統每 2 秒自動輪詢最新數據
 4. 可查看詳細的投資分配清單
+
+### 管理員面板 - 成員管理
+1. 以 Admin 身份登入
+2. 進入「成員管理」頁面
+3. 成員按會場分組（A場、B場、尚未加入）
+4. 點擊任何成員卡片查看詳細資料
+5. 點擊「修改個人資料」按鈕進入編輯模式
+6. 編輯成員信息後點擊「保存」或「取消」
+7. 點擊「移除成員」可刪除該成員
+
+### 管理員面板 - 場次管理
+1. 以 Admin 身份登入
+2. 進入「場次管理」頁面
+3. 當場次運行中時，「啟動場次」按鈕自動隱藏
+4. 點擊已封存場次查看詳細信息
+
+### 管理員面板 - 投資排名查看
+1. 點擊已封存場次打開詳细 modal
+2. 向下滾動查看「全部組別投資金額排名」區塊
+3. 排名展示所有專題按投資金額降序排列
+4. 每個專題旁顯示所屬會場標籤
+5. 綠色數字表示投資金額（千位逗號格式化）
 
 ---
 

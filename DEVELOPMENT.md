@@ -213,6 +213,57 @@ const COLOR_PALETTE = ['#新顏色1', '#新顏色2'];
 }
 ```
 
+### 自訂成員管理 UI
+
+**編輯 frontend/src/App.tsx - renderMemberManagement()：**
+```typescript
+// 修改會場分組邏輯
+const groupedMembers: { [key: string]: Member[] } = {};
+currentCampaign.venues.forEach((venue) => {
+  groupedMembers[venue.id] = currentCampaign!.members.filter((m) => m.venue_id === venue.id);
+});
+
+// 自訂成員卡片樣式
+<div className="member-card" onClick={() => setSelectedMember(member)}>
+  {member.name}
+</div>
+```
+
+**修改 CSS 樣式：**
+```css
+/** frontend/src/styles/App.css */
+.member-card {
+  /* 自訂卡片外觀 */
+  border-color: #f0ad4e;  /* 黃金色邊框 */
+  background-color: #2a3a4a;  /* 深藍背景 */
+}
+
+.member-card:hover {
+  /* 自訂 Hover 效果 */
+  transform: scale(1.05);
+  box-shadow: 0 0 10px rgba(240, 173, 78, 0.3);
+}
+```
+
+### 修改投資排名顯示
+
+**編輯 frontend/src/App.tsx - 投資排名計算部分：**
+```typescript
+// 自訂排名計算邏輯
+const projectTotals: { [key: string]: { total: number; project: any; venueId?: string } } = {};
+Object.entries(selectedCampaignDetail.investment_data || {}).forEach(([judgeId, judgements]) => {
+  // 自訂投資數據聚合邏輯
+  Object.entries(judgements as Record<string, number>).forEach(([projectId, amount]) => {
+    // ...
+  });
+});
+
+// 自訂排序邏輯
+const sortedProjects = Object.entries(projectTotals)
+  .sort((a, b) => b[1].total - a[1].total)  // 按投資金額降序
+  .map(([_, data]) => data);
+```
+
 ---
 
 ## 🔗 集成 Google Cloud Firestore
@@ -293,6 +344,66 @@ def submit_investment(data: InvestmentData, token: str = Header()):
     user = verify_token(token)
     # 使用 user 信息進行業務邏輯
     # ...
+```
+
+---
+
+## 📊 數據庫級聯刪除設計
+
+### Firestore 實現
+
+**在 firestore_db.py 中添加的方法：**
+```python
+def delete_verified_users_by_year(self, campaign_year: int) -> int:
+    """Delete all verified users associated with a specific campaign year."""
+    if not self.enabled or self._client is None:
+        return 0
+
+    docs = self._client.collection("verified_users").stream()
+    deleted_count = 0
+    for doc in docs:
+        row = doc.to_dict() or {}
+        if row.get("campaign_year") == campaign_year:
+            doc.reference.delete()
+            deleted_count += 1
+    return deleted_count
+```
+
+### 場次刪除時的級聯邏輯
+
+**修改後的 delete_archived_campaign() 函數：**
+```python
+@app.delete("/api/admin/system/archives/{campaign_id}")
+def delete_archived_campaign(
+    campaign_id: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("admin")),
+):
+    # ... 驗證邏輯 ...
+    
+    # 級聯刪除關聯的成員數據
+    if db.enabled:
+        db.delete_verified_users_by_year(target_year)
+    else:
+        # 內存模式：清理該年份的所有成員
+        verified_users_to_remove = [
+            key for key in list(verified_users.keys())
+            if key.startswith(f"{target_year}::")
+        ]
+        for key in verified_users_to_remove:
+            verified_users.pop(key, None)
+    
+    # ... 後續邏輯 ...
+```
+
+### 工作流程
+
+```
+刪除場次 → 驗證年份 → 級聯刪除成員
+                    ├─ Firestore: delete verified_users collection docs
+                    └─ 內存模式: remove keys from verified_users dict
+                           ↓
+                    更新場次狀態 → 返回成功
 ```
 
 ---

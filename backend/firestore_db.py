@@ -299,6 +299,20 @@ class FirestoreDB:
             users.append(row)
         return sorted(users, key=lambda u: str(u.get("identifier", "")))
 
+    def delete_verified_users_by_year(self, campaign_year: int) -> int:
+        """Delete all verified users associated with a specific campaign year."""
+        if not self.enabled or self._client is None:
+            return 0
+
+        docs = self._client.collection("verified_users").stream()
+        deleted_count = 0
+        for doc in docs:
+            row = doc.to_dict() or {}
+            if row.get("campaign_year") == campaign_year:
+                doc.reference.delete()
+                deleted_count += 1
+        return deleted_count
+
     def _campaign_state_doc_id(self, campaign_year: int) -> str:
         return f"year_{campaign_year}"
 

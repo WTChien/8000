@@ -66,6 +66,27 @@ interface SystemCampaign {
   closed_at?: string | null;
   summary?: {
     overall_total_investment?: number;
+    venues?: Array<{
+      venue_id: string;
+      venue_name: string;
+      total_investment: number;
+      judge_count?: number;
+      locked_count?: number;
+      projects?: Array<{
+        project_id: string;
+        project_name: string;
+        total_investment: number;
+        rank?: number;
+      }>;
+    }>;
+    overall_project_ranking?: Array<{
+      venue_id: string;
+      venue_name: string;
+      project_id: string;
+      project_name: string;
+      total_investment: number;
+      rank?: number;
+    }>;
   };
 }
 
@@ -155,6 +176,8 @@ function App() {
   const [isLoadingMembers, setIsLoadingMembers] = useState(false);
   const [isCreatingVenue, setIsCreatingVenue] = useState(false);
   const [deletingVenueId, setDeletingVenueId] = useState<string | null>(null);
+  const [pendingVenueDelete, setPendingVenueDelete] = useState<Venue | null>(null);
+  const [selectedHistoryCampaign, setSelectedHistoryCampaign] = useState<SystemCampaign | null>(null);
   const [isStartingCampaign, setIsStartingCampaign] = useState(false);
   const [isClosingCampaign, setIsClosingCampaign] = useState(false);
   const [restoringCampaignId, setRestoringCampaignId] = useState<string | null>(null);
@@ -166,7 +189,8 @@ function App() {
   const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
   const [deletingMemberId, setDeletingMemberId] = useState<string | null>(null);
   const [unlockingMemberId, setUnlockingMemberId] = useState<string | null>(null);
-  const [updatingMemberStatusId, setUpdatingMemberStatusId] = useState<string | null>(null);
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [isEditingMember, setIsEditingMember] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -265,6 +289,9 @@ function App() {
       const nextVenueId = response.data.assigned_venue_id || null;
       if (nextVenueId) {
         setDashboardVenueId((prev) => prev || nextVenueId);
+        if (response.data.role === 'judge') {
+          setCurrentView((prev) => (prev === 'lobby' ? 'judge' : prev));
+        }
       }
       setAuthUser((prev) => {
         if (!prev) {
@@ -318,7 +345,14 @@ function App() {
     setAuthUser(auth.user);
     setMessage(showMessage ? `登入成功，歡迎 ${auth.user.display_name}` : null);
     setError(null);
-    setCurrentView(auth.user.role === 'admin' ? 'admin' : 'lobby');
+    if (auth.user.role === 'admin') {
+      setCurrentView('admin');
+    } else if (auth.user.venue_id) {
+      setCurrentView('judge');
+      setDashboardVenueId((prev) => prev || auth.user.venue_id || '');
+    } else {
+      setCurrentView('lobby');
+    }
   }, []);
 
   const loginWithDisplayName = useCallback(async (rawName: string, showMessage = true): Promise<boolean> => {
@@ -714,15 +748,30 @@ function App() {
       }
 
       const uniqueIdentifiers = Array.from(new Set(memberIdentifiers));
-      await Promise.all(
-        uniqueIdentifiers.map((identifier) =>
+      const currentlyAssignedIdentifiers = judgeMembers
+        .filter((member) => member.assigned_venue_id === setupVenueId)
+        .map((member) => member.identifier);
+
+      const identifiersToRemove = currentlyAssignedIdentifiers.filter(
+        (identifier) => !uniqueIdentifiers.includes(identifier)
+      );
+
+      await Promise.all([
+        ...uniqueIdentifiers.map((identifier) =>
           axios.patch(
             `${API_BASE_URL}/api/admin/members/${encodeURIComponent(identifier)}/status`,
             { assigned_venue_id: setupVenueId, is_voted: false },
             { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
           )
-        )
-      );
+        ),
+        ...identifiersToRemove.map((identifier) =>
+          axios.patch(
+            `${API_BASE_URL}/api/admin/members/${encodeURIComponent(identifier)}/status`,
+            { assigned_venue_id: '', is_voted: false },
+            { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+          )
+        ),
+      ]);
 
       setIsVenueSetupOpen(false);
       setSetupVenueId('');
@@ -747,7 +796,8 @@ function App() {
       setDeletingVenueId(venueId);
       await axios.delete(`${API_BASE_URL}/api/admin/venues/${venueId}`, { headers: authHeaders });
       setMessage('會場已刪除');
-      await loadVenues();
+      setPendingVenueDelete(null);
+      await Promise.all([loadVenues(), loadMembers()]);
     } catch (err: unknown) {
       setError('刪除會場失敗：' + parseAxiosError(err));
     } finally {
@@ -898,29 +948,6 @@ function App() {
       setError('永久刪除失敗：' + parseAxiosError(err));
     } finally {
       setPermanentDeletingCampaignId(null);
-    }
-  };
-
-  const updateMemberStatus = async (
-    identifier: string,
-    payload: { assigned_venue_id?: string | null; is_voted?: boolean }
-  ) => {
-    if (!authHeaders || updatingMemberStatusId === identifier) {
-      return;
-    }
-    try {
-      setUpdatingMemberStatusId(identifier);
-      await axios.patch(
-        `${API_BASE_URL}/api/admin/members/${encodeURIComponent(identifier)}/status`,
-        payload,
-        { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
-      );
-      setMessage('評審狀態已更新');
-      await loadMembers();
-    } catch (err: unknown) {
-      setError('更新評審狀態失敗：' + parseAxiosError(err));
-    } finally {
-      setUpdatingMemberStatusId(null);
     }
   };
 
@@ -1115,9 +1142,11 @@ function App() {
             />
           </div>
           <div className="admin-launch-actions">
-            <button className="submit-button" onClick={startCampaign} disabled={isCampaignActive || isStartingCampaign}>
-              {isStartingCampaign ? '啟動中...' : '啟動本年度場次'}
-            </button>
+            {!isCampaignActive && (
+              <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign}>
+                {isStartingCampaign ? '啟動中...' : '啟動本年度場次'}
+              </button>
+            )}
             {isCampaignActive && (
               <button onClick={closeCampaign} disabled={isClosingCampaign}>
                 {isClosingCampaign ? '封存中...' : '關閉並封存本回'}
@@ -1161,6 +1190,9 @@ function App() {
                         : '尚無統計'}
                     </span>
                     <div className="admin-history-actions">
+                      <button onClick={() => setSelectedHistoryCampaign(campaign)}>
+                        查看戰況
+                      </button>
                       <button onClick={() => setPendingArchiveDelete(campaign)} disabled={isDeletingArchive}>
                         {isDeletingArchive && pendingArchiveDelete?.id === campaign.id ? '刪除中...' : '刪除封存紀錄'}
                       </button>
@@ -1214,11 +1246,30 @@ function App() {
         </div>
       </section>
 
+      {isCampaignActive && (
+        <div className="section admin-tab-strip">
+          <div className="nav-buttons admin-tabs">
+            <button
+              className={adminTab === 'venues' ? 'active' : ''}
+              onClick={() => setAdminTab('venues')}
+            >
+              會場管理
+            </button>
+            <button
+              className={adminTab === 'members' ? 'active' : ''}
+              onClick={() => setAdminTab('members')}
+            >
+              成員管理
+            </button>
+          </div>
+        </div>
+      )}
+
       {(!isCampaignActive || adminTab === 'members') && <section className="section judge-form">
         <div className="admin-section-heading admin-member-toolbar">
           <div>
             <h3>成員管理</h3>
-            <p>以場次切換成員資料。評審狀態會綁定到指定場次，不會互相覆蓋。</p>
+            <p>依會場分組顯示成員。點擊姓名查看詳細資料。</p>
           </div>
           <div className="admin-year-picker">
             <label htmlFor="member-campaign">管理場次</label>
@@ -1249,58 +1300,168 @@ function App() {
           </div>
         )}
 
-        {judgeMembers.map((member) => (
-          <div key={`${selectedMemberCampaignId}-${member.identifier}`} className="investment-item">
-            <p style={{ marginBottom: 8 }}>帳號：{member.identifier}</p>
-            <p style={{ marginBottom: 8 }}>場次：{selectedMemberCampaign?.label || '未選擇'} / 狀態：{member.assigned_venue_id || '未加入會場'} / {member.is_voted ? '已確認送出' : '尚未送出'}</p>
-            <div className="input-group">
-              <input
-                className="investment-input"
-                value={memberEditName[member.identifier] ?? member.display_name}
-                onChange={(e) => setMemberEditName((prev) => ({ ...prev, [member.identifier]: e.target.value }))}
-              />
-              <select
-                value={memberEditRole[member.identifier] ?? member.role}
-                onChange={(e) => setMemberEditRole((prev) => ({ ...prev, [member.identifier]: e.target.value as Role }))}
-              >
-                <option value="judge">judge</option>
-                <option value="admin">admin</option>
-              </select>
-              {member.is_voted && (
-                <button onClick={() => unlockMember(member.identifier)} disabled={unlockingMemberId === member.identifier}>
-                  {unlockingMemberId === member.identifier ? '解除中...' : '解除鎖定'}
-                </button>
+        {judgeMembers.length > 0 && (() => {
+          // 分組成員
+          const groupedMembers = (() => {
+            const groups: Record<string, AdminMember[]> = {};
+            judgeMembers.forEach((member) => {
+              const key = member.assigned_venue_id || '__unassigned__';
+              if (!groups[key]) groups[key] = [];
+              groups[key].push(member);
+            });
+            return groups;
+          })();
+
+          // 取得會場名稱
+          const venueNames: Record<string, string> = {};
+          venues.forEach((v) => {
+            venueNames[v.id] = v.name || v.classroom || v.id;
+          });
+
+          // 排序：有會場的在前，尚未加入的在後
+          const sortedKeys = Object.keys(groupedMembers).sort((a, b) => {
+            if (a === '__unassigned__') return 1;
+            if (b === '__unassigned__') return -1;
+            return (venueNames[a] || a).localeCompare((venueNames[b] || b), 'zh-Hant', { numeric: true });
+          });
+
+          return (
+            <>
+              {sortedKeys.map((venueId) => (
+                <div key={venueId} className="member-section">
+                  <div className="member-section-title">
+                    {venueId === '__unassigned__' ? '尚未加入會場' : `${venueNames[venueId] || venueId} 會場`}
+                  </div>
+                  <div className="member-cards">
+                    {(groupedMembers[venueId] || [])
+                      .sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'))
+                      .map((member) => (
+                        <div
+                          key={member.identifier}
+                          className="member-card"
+                          onClick={() => {
+                            setSelectedMemberId(member.identifier);
+                            setIsEditingMember(false);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <div className="member-name">{member.display_name}</div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          );
+        })()}
+      </section>}
+
+      {selectedMemberId && (() => {
+        const member = judgeMembers.find((m) => m.identifier === selectedMemberId);
+        if (!member) return null;
+
+        return (
+          <div className="admin-modal-backdrop" onClick={() => setSelectedMemberId(null)}>
+            <div className="admin-modal member-detail-modal" onClick={(e) => e.stopPropagation()}>
+              <h3>成員資料</h3>
+              <div className="member-detail-info">
+                <div className="info-row">
+                  <label>姓名：</label>
+                  <span>{member.display_name}</span>
+                </div>
+                <div className="info-row">
+                  <label>帳號：</label>
+                  <span>{member.identifier}</span>
+                </div>
+                <div className="info-row">
+                  <label>角色：</label>
+                  <span>{member.role === 'judge' ? '評審' : '管理員'}</span>
+                </div>
+                <div className="info-row">
+                  <label>會場：</label>
+                  <span>{member.assigned_venue_id ? venues.find((v) => v.id === member.assigned_venue_id)?.name || member.assigned_venue_id : '尚未加入'}</span>
+                </div>
+                <div className="info-row">
+                  <label>投資送出狀態：</label>
+                  <span>{member.is_voted ? '已鎖定送出' : '尚未送出'}</span>
+                </div>
+              </div>
+
+              {isEditingMember && (
+                <div className="member-edit-form">
+                  <div className="form-group">
+                    <label>姓名</label>
+                    <input
+                      type="text"
+                      className="investment-input"
+                      value={memberEditName[member.identifier] ?? member.display_name}
+                      onChange={(e) => setMemberEditName((prev) => ({ ...prev, [member.identifier]: e.target.value }))}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>角色</label>
+                    <select
+                      className="investment-input"
+                      value={memberEditRole[member.identifier] ?? member.role}
+                      onChange={(e) => setMemberEditRole((prev) => ({ ...prev, [member.identifier]: e.target.value as Role }))}
+                    >
+                      <option value="judge">評審</option>
+                      <option value="admin">管理員</option>
+                    </select>
+                  </div>
+                  {member.is_voted && (
+                    <div className="form-note">
+                      ⚠️ 此成員已鎖定投資。如要修改，需先解除鎖定。
+                    </div>
+                  )}
+                </div>
               )}
-              <button onClick={() => updateMember(member.identifier)} disabled={updatingMemberId === member.identifier}>
-                {updatingMemberId === member.identifier ? '儲存中...' : '修改'}
-              </button>
-              <button onClick={() => deleteMember(member.identifier)} disabled={deletingMemberId === member.identifier}>
-                {deletingMemberId === member.identifier ? '刪除中...' : '刪除'}
-              </button>
+
+              <div className="admin-modal-actions">
+                {isEditingMember ? (
+                  <>
+                    <button onClick={() => setIsEditingMember(false)}>取消</button>
+                    <button
+                      onClick={() => updateMember(member.identifier)}
+                      disabled={updatingMemberId === member.identifier}
+                      style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)' }}
+                    >
+                      {updatingMemberId === member.identifier ? '儲存中...' : '儲存'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => setSelectedMemberId(null)}>關閉</button>
+                    {member.is_voted && (
+                      <button
+                        onClick={() => unlockMember(member.identifier)}
+                        disabled={unlockingMemberId === member.identifier}
+                        style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)' }}
+                      >
+                        {unlockingMemberId === member.identifier ? '解除中...' : '解除鎖定'}
+                      </button>
+                    )}
+                    <button onClick={() => setIsEditingMember(true)} style={{ background: 'linear-gradient(135deg, #0ea5e9, #0284c7)' }}>
+                      修改個人資料
+                    </button>
+                    <button
+                      onClick={() => deleteMember(member.identifier)}
+                      disabled={deletingMemberId === member.identifier}
+                      style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)' }}
+                    >
+                      {deletingMemberId === member.identifier ? '刪除中...' : '刪除'}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        ))}
-      </section>}
+        );
+      })()}
 
       {isCampaignActive && (
         <>
-          <div className="section admin-tab-strip">
-            <div className="nav-buttons admin-tabs">
-              <button
-                className={adminTab === 'venues' ? 'active' : ''}
-                onClick={() => setAdminTab('venues')}
-              >
-                會場管理
-              </button>
-              <button
-                className={adminTab === 'members' ? 'active' : ''}
-                onClick={() => setAdminTab('members')}
-              >
-                成員管理
-              </button>
-            </div>
-          </div>
-
           {adminTab === 'venues' && <section className="section judge-form">
             <h3>會場管理（僅在場次啟動後開放）</h3>
             <p style={{ marginBottom: 12 }}>啟動後才需要處理會場、教室與各會場評審鎖定狀態。</p>
@@ -1318,7 +1479,9 @@ function App() {
             </div>
 
             <div className="venue-grid">
-              {venues.map((venue) => (
+              {[...venues]
+                .sort((a, b) => (a.classroom || a.name).localeCompare((b.classroom || b.name), 'zh-Hant', { numeric: true, sensitivity: 'base' }))
+                .map((venue) => (
                 <div
                   key={venue.id}
                   className="venue-grid-card"
@@ -1337,7 +1500,7 @@ function App() {
                     <span className="venue-card-name">{venue.classroom || venue.name}</span>
                     <div className="venue-card-actions" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => openVenueSetup(venue.id)}>修改</button>
-                      <button onClick={() => deleteVenue(venue.id)} disabled={deletingVenueId === venue.id}>
+                      <button onClick={() => setPendingVenueDelete(venue)} disabled={deletingVenueId === venue.id}>
                         {deletingVenueId === venue.id ? '刪除中...' : '刪除'}
                       </button>
                     </div>
@@ -1409,22 +1572,16 @@ function App() {
                         <span className="venue-member-dot" />
                         <span className="venue-member-name">{member.display_name}</span>
                         <span className="venue-member-status">{member.is_voted ? '已鎖定' : '可編輯'}</span>
-                        <div className="venue-member-btns">
-                          {member.is_voted && (
+                        {member.is_voted && (
+                          <div className="venue-member-btns">
                             <button
                               onClick={() => unlockMember(member.identifier)}
                               disabled={unlockingMemberId === member.identifier}
                             >
-                              {unlockingMemberId === member.identifier ? '...' : '解鎖'}
+                              {unlockingMemberId === member.identifier ? '...' : '解除鎖定'}
                             </button>
-                          )}
-                          <button
-                            onClick={() => updateMemberStatus(member.identifier, { assigned_venue_id: '', is_voted: false })}
-                            disabled={updatingMemberStatusId === member.identifier}
-                          >
-                            {updatingMemberStatusId === member.identifier ? '...' : '移出'}
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -1604,6 +1761,103 @@ function App() {
           </div>
         </div>
       )}
+      {selectedHistoryCampaign && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal admin-history-detail-modal">
+            <h3>{selectedHistoryCampaign.label}｜封存戰況</h3>
+            <p className="admin-modal-note">
+              場次年度：{selectedHistoryCampaign.year} /
+              封存時間：{selectedHistoryCampaign.closed_at ? new Date(selectedHistoryCampaign.closed_at).toLocaleString('zh-Hant-TW') : '未記錄'}
+            </p>
+
+            {selectedHistoryCampaign.summary?.venues && selectedHistoryCampaign.summary.venues.length > 0 ? (
+              <>
+                <div className="history-venue-list">
+                  {selectedHistoryCampaign.summary.venues
+                    .slice()
+                    .sort((a, b) => b.total_investment - a.total_investment)
+                    .map((venue) => (
+                      <div key={venue.venue_id} className="history-venue-card">
+                        <div className="history-venue-header">
+                          <strong>{venue.venue_name}</strong>
+                          <span>${venue.total_investment.toLocaleString()}</span>
+                        </div>
+                        <p className="admin-modal-note" style={{ marginTop: 6 }}>
+                          評審鎖定：{venue.locked_count ?? 0} / {venue.judge_count ?? 0}
+                        </p>
+                        {venue.projects && venue.projects.length > 0 ? (
+                          <div className="history-project-list">
+                            {venue.projects.map((project, index) => (
+                              <div key={project.project_id} className="history-project-row">
+                                <span>第 {project.rank ?? index + 1} 名</span>
+                                <span>{project.project_name}</span>
+                                <span>${project.total_investment.toLocaleString()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="admin-modal-note" style={{ marginTop: 8 }}>此封存紀錄未包含專題明細。</p>
+                        )}
+                      </div>
+                    ))}
+                </div>
+
+                <div className="history-overall-section">
+                  <h4>全部組別投資金總排名</h4>
+                  {selectedHistoryCampaign.summary?.overall_project_ranking && selectedHistoryCampaign.summary.overall_project_ranking.length > 0 ? (
+                    <div className="history-overall-list">
+                      {selectedHistoryCampaign.summary.overall_project_ranking.map((project, index) => (
+                        <div key={`${project.venue_id}-${project.project_id}-${index}`} className="history-overall-row">
+                          <span>第 {project.rank ?? index + 1} 名</span>
+                          <span>{project.project_name}</span>
+                          <span>{project.venue_name || '未指定'}</span>
+                          <span>${project.total_investment.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="admin-modal-note">此封存紀錄尚未包含全部組別總排名（可用新封存場次查看）。</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="admin-modal-note">此封存紀錄僅有總額，尚無會場/專題戰況細節。</p>
+            )}
+
+            <div className="admin-modal-actions">
+              <button onClick={() => setSelectedHistoryCampaign(null)}>關閉</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingVenueDelete && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal admin-confirm-modal">
+            <h3>確認刪除會場？</h3>
+            <p className="admin-modal-note">
+              你即將刪除「{pendingVenueDelete.classroom || pendingVenueDelete.name}」。
+              此操作會自動將該會場的評審移出並解除鎖定。
+            </p>
+            <div className="admin-modal-actions">
+              <button
+                onClick={() => setPendingVenueDelete(null)}
+                disabled={deletingVenueId === pendingVenueDelete.id}
+              >
+                取消
+              </button>
+              <button
+                className="submit-button"
+                style={{ background: '#dc2626' }}
+                onClick={() => deleteVenue(pendingVenueDelete.id)}
+                disabled={deletingVenueId === pendingVenueDelete.id}
+              >
+                {deletingVenueId === pendingVenueDelete.id ? '刪除中...' : '確認刪除會場'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingArchiveDelete && (
         <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
@@ -1693,6 +1947,7 @@ function App() {
             authToken={authToken}
             authUser={authUser}
             venueId={authUser.venue_id as string}
+            venueName={venues.find((v) => v.id === authUser.venue_id)?.name}
             isLocked={Boolean(judgeStatus?.is_voted)}
             onLeaveVenue={leaveVenue}
             onSubmitted={refreshJudgeStatus}

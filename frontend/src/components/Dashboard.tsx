@@ -174,64 +174,115 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
   }
 
   if (isPresentationMode) {
+    // Track which ranks have been revealed (sortedProjects is sorted ascending: last→1st)
+    const revealedSet = new Set(
+      sortedProjects.slice(0, revealedCount).map((p) => p.rank)
+    );
+
+    // Podium layout: 2nd (left) · 1st (centre, tallest) · 3rd (right)
+    const podiumSlots = [
+      { rank: 2, icon: '🥈', colorClass: 'rank-2' },
+      { rank: 1, icon: '🥇', colorClass: 'rank-1' },
+      { rank: 3, icon: '🥉', colorClass: 'rank-3' },
+    ];
+
+    // Below-podium listings: rank 4 at top, last place at bottom
+    const belowPodiumProjects = sortedProjects
+      .filter((p) => p.rank > 3)
+      .sort((a, b) => a.rank - b.rank);
+
     return (
       <div className="dashboard-presentation">
         <div className="presentation-header">
-          <h1>{venueName || venueId} - 成果發表戰況</h1>
-          <button 
+          <h1>{venueName || venueId} – 成果發表戰況</h1>
+          <button
             className="presentation-exit-btn"
             onClick={() => onPresentationModeChange?.(false)}
-            title="按 ESC 或點擊此按鈕退出"
+            title="退出演示"
           >
             ✕ 退出演示
           </button>
         </div>
 
-        <div className="presentation-ranking">
-          <div className="ranking-controls">
-            <button 
-              className="ranking-btn"
-              onClick={() => setRevealedCount(sortedProjects.length)}
+        <div className="ranking-controls">
+          <button
+            className="ranking-btn"
+            onClick={() => setRevealedCount(sortedProjects.length)}
+          >
+            📊 一次公布所有結果
+          </button>
+          <button
+            className={`ranking-btn ${isAutoReveal ? 'active' : ''}`}
+            onClick={() => setIsAutoReveal(!isAutoReveal)}
+          >
+            {isAutoReveal ? '⏸ 暫停' : '▶ 逐個揭曉排名'}
+          </button>
+          {revealedCount < sortedProjects.length && !isAutoReveal && (
+            <button
+              className="ranking-btn next-btn"
+              onClick={() => setRevealedCount((prev) => Math.min(prev + 1, sortedProjects.length))}
             >
-              📊 一次公布所有結果
+              ⏭ 下一個
             </button>
-            <button 
-              className={`ranking-btn ${isAutoReveal ? 'active' : ''}`}
-              onClick={() => setIsAutoReveal(!isAutoReveal)}
-            >
-              {isAutoReveal ? '⏸ 暫停' : '▶ 逐個揭曉排名'}
-            </button>
-            {revealedCount < sortedProjects.length && !isAutoReveal && (
-              <button 
-                className="ranking-btn next-btn"
-                onClick={() => setRevealedCount((prev) => Math.min(prev + 1, sortedProjects.length))}
-              >
-                ⏭ 下一個
-              </button>
-            )}
+          )}
+        </div>
+
+        <div className="podium-area">
+          {/* Podium stage: 2nd (left) · 1st (centre, tallest) · 3rd (right) */}
+          <div className="podium-stage">
+            {podiumSlots.map(({ rank, icon, colorClass }) => {
+              const project = sortedProjects.find((p) => p.rank === rank);
+              const isRevealed = !!project && revealedSet.has(rank);
+              return (
+                <div
+                  key={rank}
+                  className={`podium-column ${colorClass}${isRevealed ? ' revealed' : ''}${!project ? ' empty' : ''}`}
+                >
+                  <div className="podium-info">
+                    {isRevealed && project ? (
+                      <>
+                        <div className="podium-project-name">{project.name}</div>
+                        <div className="podium-project-amount">
+                          ${project.total_investment.toLocaleString()}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="podium-project-name podium-placeholder">？？？</div>
+                        <div className="podium-project-amount podium-placeholder">—</div>
+                      </>
+                    )}
+                  </div>
+                  <div className={`podium-block ${colorClass}`}>
+                    <span className="podium-rank-label">{icon} 第 {rank} 名</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          <div className="ranking-list">
-            {sortedProjects.map((project, idx) => (
-              <div
-                key={project.id}
-                className={`ranking-item ${idx < revealedCount ? 'revealed' : ''}`}
-                style={{
-                    animationDelay: `${idx < revealedCount ? idx * 0.08 : 0}s`
-                }}
-              >
-                <div className="ranking-rank">
-                  第 {project.rank} 名
-                </div>
-                <div className="ranking-name">
-                  {project.name}
-                </div>
-                <div className="ranking-amount">
-                  {idx < revealedCount ? `$${project.total_investment.toLocaleString()}` : '？？？'}
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* Below-podium list: rank 4 at top → last place at bottom */}
+          {belowPodiumProjects.length > 0 && (
+            <div className="below-podium-zone">
+              {belowPodiumProjects.map((project) => {
+                const isRevealed = revealedSet.has(project.rank);
+                return (
+                  <div
+                    key={project.id}
+                    className={`below-podium-item${isRevealed ? ' revealed' : ''}`}
+                  >
+                    <span className="bp-rank">第 {project.rank} 名</span>
+                    <span className="bp-name">
+                      {isRevealed ? project.name : '？？？'}
+                    </span>
+                    <span className="bp-amount">
+                      {isRevealed ? `$${project.total_investment.toLocaleString()}` : '—'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="presentation-footer">
@@ -241,7 +292,9 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
           </div>
           <div className="footer-stat">
             <span className="footer-label">已投資專題</span>
-            <span className="footer-value">{projects.filter((p) => p.total_investment > 0).length} / {projects.length}</span>
+            <span className="footer-value">
+              {projects.filter((p) => p.total_investment > 0).length} / {projects.length}
+            </span>
           </div>
           <div className="footer-stat">
             <span className="footer-label">最後更新</span>
