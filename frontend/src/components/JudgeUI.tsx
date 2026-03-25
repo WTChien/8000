@@ -22,6 +22,7 @@ interface MyInvestmentResponse {
 }
 
 type InvestmentMap = Record<string, number>;
+type SubmitMode = 'draft' | 'lock' | null;
 
 interface AuthUser {
   user_id: string;
@@ -52,6 +53,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
   const [error, setError] = useState<string | null>(null);
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitMode, setSubmitMode] = useState<SubmitMode>(null);
   const submittingRef = useRef(false);
 
   // Fetch projects on component mount
@@ -157,20 +159,24 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
 
     if (isLocked) {
       setError('本回合已上傳並鎖定，無法再修改');
+      submittingRef.current = false;
       return;
     }
 
     if (lockSubmission && !isFormValid()) {
       setError('鎖定上傳驗證失敗。請確保總額為 10,000 元。');
+      submittingRef.current = false;
       return;
     }
 
     if (!lockSubmission && !isDraftValid()) {
       setError('暫存上傳失敗：投資總額不可超過 10,000 元。');
+      submittingRef.current = false;
       return;
     }
 
     try {
+      setSubmitMode(lockSubmission ? 'lock' : 'draft');
       setIsSubmitting(true);
       setSubmitMessage(null);
       await axios.post(`${API_BASE_URL}/api/submit_investment`, {
@@ -195,6 +201,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
+      setSubmitMode(null);
     }
   }, [authToken, investments, isDraftValid, isFormValid, isLocked, isSubmitting, onSubmitted]);
 
@@ -204,6 +211,20 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
 
   return (
     <div className="judge-ui container">
+      {isSubmitting && (
+        <div className="judge-upload-backdrop" role="status" aria-live="polite" aria-label="正在上傳投資資料">
+          <div className="judge-upload-modal">
+            <span className="judge-upload-spinner" aria-hidden="true" />
+            <h3>{submitMode === 'lock' ? '正在鎖定上傳' : '正在暫存上傳'}</h3>
+            <p className="judge-upload-status">
+              資料傳送中，請稍候
+              <span className="dot dot-1" aria-hidden="true">.</span>
+              <span className="dot dot-2" aria-hidden="true">.</span>
+              <span className="dot dot-3" aria-hidden="true">.</span>
+            </p>
+          </div>
+        </div>
+      )}
       <section className="section judge-header">
         <h2>評審投資介面</h2>
         <p>目前身份：<strong>{authUser.display_name}</strong>（{authUser.role}）</p>

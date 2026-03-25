@@ -18,12 +18,22 @@ interface ProjectsResponse {
   remaining_budget: number;
   venue_id?: string;
   venue_name?: string;
+  judge_investments?: JudgeInvestment[];
+}
+
+interface JudgeInvestment {
+  identifier: string;
+  display_name: string;
+  is_voted: boolean;
+  investments: Record<string, number>;
+  total_investment: number;
 }
 
 interface ChartDatum {
   id: string;
   name: string;
   value: number;
+  [key: string]: string | number;
 }
 
 interface DashboardProps {
@@ -41,6 +51,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
   const [totalInvested, setTotalInvested] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [venueName, setVenueName] = useState('');
+  const [judgeInvestments, setJudgeInvestments] = useState<JudgeInvestment[]>([]);
   
   // Presentation mode states
   const [revealedCount, setRevealedCount] = useState(0);
@@ -58,6 +69,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
       setVenueName(response.data.venue_name || venueId);
       
       setProjects(projectList);
+      setJudgeInvestments(response.data.judge_investments || []);
 
       // Transform data for Recharts
       const data = projectList.map((project) => ({
@@ -131,19 +143,67 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
     return COLOR_PALETTE[index % COLOR_PALETTE.length];
   };
 
+  const getJudgeColor = (index: number): string => {
+    if (index < COLOR_PALETTE.length) {
+      return COLOR_PALETTE[index];
+    }
+    const hue = (index * 61) % 360;
+    return `hsl(${hue}, 72%, 52%)`;
+  };
+
+  const stackedChartData = chartData.map((project) => {
+    const row: ChartDatum = {
+      id: project.id,
+      name: project.name,
+      value: project.value,
+    };
+    judgeInvestments.forEach((judge) => {
+      row[judge.identifier] = judge.investments[project.id] || 0;
+    });
+    return row;
+  });
+
+  const hasMissingJudgeBreakdown =
+    judgeInvestments.length === 0 && projects.some((project) => project.total_investment > 0);
+
   // Custom tooltip for better UX
   const CustomTooltip = ({
     active,
     payload
   }: {
     active?: boolean;
-    payload?: Array<{ payload: ChartDatum; value: number }>;
+    payload?: Array<{ dataKey?: string; name?: string; color?: string; value?: number; payload: ChartDatum }>;
   }) => {
     if (active && payload && payload.length) {
+      const total = Number(payload[0].payload.value || 0);
+      const judgePayload = payload
+        .filter((row) => row.dataKey && row.dataKey !== 'value')
+        .map((row) => ({
+          key: String(row.dataKey),
+          value: Number(row.value || 0),
+          color: row.color,
+        }))
+        .filter((row) => row.value > 0)
+        .sort((a, b) => b.value - a.value);
+
       return (
         <div className="custom-tooltip">
           <p className="tooltip-name">{payload[0].payload.name}</p>
-          <p className="tooltip-value">投資金額: ${payload[0].value.toLocaleString()}</p>
+          <p className="tooltip-value">總投資: ${total.toLocaleString()}</p>
+          {judgePayload.length > 0 && (
+            <div className="tooltip-breakdown">
+              {judgePayload.map((row) => {
+                const judge = judgeInvestments.find((item) => item.identifier === row.key);
+                return (
+                  <p key={row.key} className="tooltip-breakdown-row">
+                    <span className="tooltip-dot" style={{ backgroundColor: row.color || '#94a3b8' }} />
+                    <span>{judge?.display_name || row.key}</span>
+                    <span>${row.value.toLocaleString()}</span>
+                  </p>
+                );
+              })}
+            </div>
+          )}
         </div>
       );
     }
@@ -360,8 +420,23 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
 
       <section className="section dashboard-chart">
         <h3>目前資金比較圖</h3>
+        {hasMissingJudgeBreakdown && (
+          <p className="chart-warning">
+            目前這個會場只有累計總額，尚未記錄評審個別分配（通常是舊資料或舊版提交）。
+          </p>
+        )}
+        {judgeInvestments.length > 0 && (
+          <div className="judge-legend">
+            {judgeInvestments.map((judge, index) => (
+              <span key={judge.identifier} className="judge-legend-item">
+                <span className="judge-legend-dot" style={{ backgroundColor: getJudgeColor(index) }} />
+                {judge.display_name}
+              </span>
+            ))}
+          </div>
+        )}
         <ResponsiveContainer width="100%" height={400}>
-          <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+          <BarChart data={stackedChartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
             <XAxis 
               dataKey="name" 
@@ -375,16 +450,31 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
               tick={{ fontSize: 12 }}
             />
             <Tooltip content={<CustomTooltip />} />
-            <Bar 
-              dataKey="value" 
-              radius={[8, 8, 0, 0]}
-              animationDuration={300}
-              isAnimationActive={true}
-            >
-              {chartData.map((_, index) => (
-                <Cell key={`cell-${index}`} fill={getColor(index)} />
-              ))}
-            </Bar>
+            {judgeInvestments.length > 0 ? (
+              judgeInvestments.map((judge, index) => (
+                <Bar
+                  key={judge.identifier}
+                  dataKey={judge.identifier}
+                  name={judge.display_name}
+                  stackId="judge"
+                  radius={index === judgeInvestments.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}
+                  fill={getJudgeColor(index)}
+                  animationDuration={300}
+                  isAnimationActive={true}
+                />
+              ))
+            ) : (
+              <Bar 
+                dataKey="value" 
+                radius={[8, 8, 0, 0]}
+                animationDuration={300}
+                isAnimationActive={true}
+              >
+                {chartData.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={getColor(index)} />
+                ))}
+              </Bar>
+            )}
           </BarChart>
         </ResponsiveContainer>
         <p className="chart-note">戰況每 2 秒更新一次，主持人可直接投影開獎揭曉</p>
@@ -397,6 +487,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
             <tr>
               <th>專題名稱</th>
               <th>投資金額</th>
+              <th>評審分配</th>
               <th>進度條</th>
             </tr>
           </thead>
@@ -411,6 +502,29 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                   {project.name}
                 </td>
                 <td className="amount">${project.total_investment.toLocaleString()}</td>
+                <td>
+                  <div className="judge-allocation-list">
+                    {judgeInvestments.length === 0 && (
+                      <span className="judge-allocation-empty">
+                        {hasMissingJudgeBreakdown
+                          ? '此會場目前僅有總額，沒有評審個別分配明細'
+                          : '尚無評審資料'}
+                      </span>
+                    )}
+                    {judgeInvestments.length > 0 && judgeInvestments.map((judge, judgeIndex) => {
+                      const amount = judge.investments[project.id] || 0;
+                      return (
+                        <span key={`${project.id}-${judge.identifier}`} className="judge-allocation-item">
+                          <span
+                            className="judge-allocation-dot"
+                            style={{ backgroundColor: getJudgeColor(judgeIndex) }}
+                          />
+                          {judge.display_name}: ${amount.toLocaleString()}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </td>
                 <td>
                   <div className="progress-bar-container">
                     <div 

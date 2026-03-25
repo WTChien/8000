@@ -3,34 +3,29 @@
 ## 🏗️ 架構概覽
 
 ```
-Browser (React App)
-       ↓↑ REST API (Axios)
-Backend (FastAPI)
-       ↓↑ Memory/DB
-Mock Data (NoSQL Structure)
+Browser (React + TypeScript)
+       ↓↑ REST API (Axios + JWT Bearer Token)
+Backend (FastAPI + Python)
+       ↓↑ 持久化 / 快取
+Google Cloud Firestore  ←→  記憶體 fallback（USE_FIRESTORE=false）
 ```
 
-### 前後端分離原則
-- 前端只負責 UI 和用戶交互
-- 後端負責業務邏輯和數據驗證
-- 通過 RESTful API 進行通信
+- 前後端完全分離，透過 RESTful API 通信
+- 所有需要身份的 API 以 `Authorization: Bearer <token>` 驗證
+- 角色分為 `admin` 與 `judge`；不同角色看到不同介面與可用端點
+- Firestore 與記憶體雙模式可透過 `USE_FIRESTORE` 環境變數切換
 
 ---
 
 ## 🔧 開發環境設定
 
 ### 推薦 IDE
-- **VS Code**: https://code.visualstudio.com
-  - 推薦擴展：
-    - ES7+ React/Redux/React-Native snippets
-    - Python
-    - REST Client
-    - Prettier - Code formatter
+- **VS Code** 搭配：ES7+ React snippets、Python、Prettier、REST Client
 
 ### 調試工具
-- **Chrome DevTools**: F12 (JavaScript & Network)
+- **Chrome DevTools**: F12（JavaScript & Network）
 - **FastAPI Swagger UI**: http://localhost:8000/docs
-- **Postman**: 進行 API 測試
+- **Postman 集合**: `FundThePitch.postman_collection.json`（根目錄）
 
 ---
 
@@ -39,25 +34,11 @@ Mock Data (NoSQL Structure)
 ### 後端結構
 ```
 backend/
-├── main.py              # 主應用 (所有代碼在此)
-│   ├── FastAPI 初始化
-│   ├── CORS 配置
-│   ├── Mock Data
-│   ├── Pydantic 模型
-│   └── API 路由
+├── main.py              # 所有路由、業務邏輯、Pydantic 模型（約 2100 行）
+├── firestore_db.py      # Firestore 讀寫封裝（可停用改用記憶體）
+└── keys/
+    └── *.json           # Firebase 服務帳號金鑰（勿上傳 Git）
 ```
-
-**未來可擴展為：**
-```
-backend/
-├── main.py              # 應用進入點
-├── config.py            # 配置
-├── models/
-│   ├── project.py
-│   └── judge.py
-├── schemas/
-│   ├── project.py
-│   └── investment.py
 ├── routes/
 │   ├── projects.py
 │   ├── investments.py
@@ -74,18 +55,17 @@ backend/
 ```
 frontend/
 ├── public/
-│   └── index.html       # HTML 模板
+│   └── index.html
 ├── src/
-│   ├── components/
-│   │   ├── JudgeUI.tsx   # 評審投資介面
-│   │   └── Dashboard.tsx # 儀表板
-│   ├── styles/
-│   │   └── App.css      # 全域樣式
-│   ├── App.tsx          # 主元件 (路由)
+│   ├── App.tsx          # 頂層：認證、視圖路由（lobby/judge/dashboard/admin）
 │   ├── index.tsx        # React 進入點
-│   └── utils/           # 工具函數
-├── .env                 # 環境變數
-└── package.json
+│   ├── components/
+│   │   ├── JudgeUI.tsx  # 評審投資介面（草稿暫存 + 鎖定提交）
+│   │   └── Dashboard.tsx# 現場儀表板（比較圖 + 簡報模式排名揭曉）
+│   └── styles/
+│       └── App.css      # 全域樣式與動畫
+├── .env                 # REACT_APP_API_URL
+└── package.json         # 依賴：React 18、Recharts 2.10、Axios 1.6、TypeScript 4.9
 ```
 
 ---
@@ -266,145 +246,69 @@ const sortedProjects = Object.entries(projectTotals)
 
 ---
 
-## 🔗 集成 Google Cloud Firestore
+## � 認證機制（已實作）
 
-### 步驟 1：安裝依賴
+系統使用自行實作的 JWT（無第三方 Auth 服務）：
+
+1. `POST /api/judges/login` → 傳回 `access_token`（JWT）
+2. 前端將 token 存入 `localStorage`，後續請求加入 `Authorization: Bearer <token>` header
+3. 後端 `get_current_user()` 解析 token，`require_roles()` 做角色保護
+4. Token 預設有效 48 小時（`TOKEN_TTL_HOURS`）
+5. 頁面重整時自動嘗試恢復 session（`/api/auth/me` 驗證現有 token）
+
+---
+
+## 🗄️ Firestore 資料結構（已整合）
+
+Firestore 已與後端完全整合，透過 `FirestoreDB` 類別封裝：
+
+| Collection | 說明 |
+|-----------|------|
+| `verified_users` | 已驗證用戶，key：`{year}::{identifier}` |
+| `campaigns` | 場次記錄（active / closed） |
+| `recently_deleted` | 軟刪除場次（30 天保留期）|
+| `venue_projects` | 各會場的專題清單與投資金額 |
+| `venue_judge_investments` | 各評審對各專題的個別投資明細 |
+
+金鑰設定：
 ```bash
-pip install firebase-admin
-```
+# 使用預設路徑（backend/keys/*.json）
+python backend/main.py
 
-### 步驟 2：創建 database/firestore.py
-```python
-import firebase_admin
-from firebase_admin import credentials, firestore
+# 或自訂路徑
+export FIREBASE_CREDENTIALS_PATH=/path/to/key.json
 
-# 初始化 Firebase
-cred = credentials.Certificate('path/to/serviceAccountKey.json')
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-class FirestoreDB:
-    @staticmethod
-    def get_projects():
-        docs = db.collection('projects').stream()
-        return [doc.to_dict() for doc in docs]
-    
-    @staticmethod
-    def update_project(project_id, data):
-        db.collection('projects').document(project_id).update(data)
-```
-
-### 步驟 3：修改 main.py
-```python
-from database.firestore import FirestoreDB
-
-@app.get("/api/projects")
-def get_projects():
-    # 替換記憶體數據
-    projects = FirestoreDB.get_projects()
-    return ProjectsListResponse(...)
+# 停用 Firestore，改用純記憶體模式
+export USE_FIRESTORE=false
 ```
 
 ---
 
-## 🔐 添加身份驗證 (JWT)
+## 🗑️ 場次刪除與級聯清理
 
-### 安裝依賴
-```bash
-pip install python-jose passlib python-dotenv
-```
+刪除封存場次時：
+1. 場次移入 `recently_deleted`（軟刪除，30 天可還原）
+2. 30 天後系統自動永久刪除，同時清除該年份所有 `verified_users`
 
-### 創建 auth.py
-```python
-from datetime import datetime, timedelta
-from jose import JWTError, jwt
-from fastapi import Depends, HTTPException
-
-SECRET_KEY = "your-secret-key"
-ALGORITHM = "HS256"
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=24)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def verify_token(token: str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-```
-
-### 在路由中使用
-```python
-@app.post("/api/submit_investment")
-def submit_investment(data: InvestmentData, token: str = Header()):
-    user = verify_token(token)
-    # 使用 user 信息進行業務邏輯
-    # ...
-```
+`POST /api/admin/system/archives/{id}/restore` 可在期限內還原。
 
 ---
 
 ## 📊 數據庫級聯刪除設計
 
-### Firestore 實現
-
-**在 firestore_db.py 中添加的方法：**
-```python
-def delete_verified_users_by_year(self, campaign_year: int) -> int:
-    """Delete all verified users associated with a specific campaign year."""
-    if not self.enabled or self._client is None:
-        return 0
-
-    docs = self._client.collection("verified_users").stream()
-    deleted_count = 0
-    for doc in docs:
-        row = doc.to_dict() or {}
-        if row.get("campaign_year") == campaign_year:
-            doc.reference.delete()
-            deleted_count += 1
-    return deleted_count
+**場次刪除流程**：
+```
+管理員刪除場次 → 驗證場次為 closed 狀態
+  ↓
+移入 recently_deleted（保留 30 天）
+  ↓ （30 天後或管理員主動「永久刪除」）
+永久刪除 → 清除該年份 verified_users → 清除 venue_projects / investments
 ```
 
-### 場次刪除時的級聯邏輯
-
-**修改後的 delete_archived_campaign() 函數：**
-```python
-@app.delete("/api/admin/system/archives/{campaign_id}")
-def delete_archived_campaign(
-    campaign_id: str,
-    year: Optional[int] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
-):
-    # ... 驗證邏輯 ...
-    
-    # 級聯刪除關聯的成員數據
-    if db.enabled:
-        db.delete_verified_users_by_year(target_year)
-    else:
-        # 內存模式：清理該年份的所有成員
-        verified_users_to_remove = [
-            key for key in list(verified_users.keys())
-            if key.startswith(f"{target_year}::")
-        ]
-        for key in verified_users_to_remove:
-            verified_users.pop(key, None)
-    
-    # ... 後續邏輯 ...
-```
-
-### 工作流程
-
-```
-刪除場次 → 驗證年份 → 級聯刪除成員
-                    ├─ Firestore: delete verified_users collection docs
-                    └─ 內存模式: remove keys from verified_users dict
-                           ↓
-                    更新場次狀態 → 返回成功
-```
+相關 API：
+- `DELETE /api/admin/system/archives/{id}` — 軟刪除
+- `POST /api/admin/system/archives/{id}/restore` — 還原
+- `DELETE /api/admin/system/archives/{id}/permanent-delete` — 永久刪除
 
 ---
 
@@ -541,13 +445,12 @@ console.error('Error:', error);
 
 ## 🎯 下一步推薦
 
-1. **集成真實數據庫** → Google Cloud Firestore
-2. **添加身份驗證** → Firebase Auth 或 JWT
-3. **實時更新** → WebSocket 或 Firebase Realtime
-4. **數據分析** → 添加投票統計功能
-5. **移動適配** → Progressive Web App (PWA)
-6. **國際化** → i18n 多語言支持
+1. **WebSocket 即時更新** → 取代 2 秒輪詢，改善延遲
+2. **Firebase Authentication** → 整合 Google / Email 身份驗證
+3. **Progressive Web App (PWA)** → 評審可「安裝」到手機桌面
+4. **匯出功能** → PDF / CSV 投資摘要報表
+5. **國際化** → i18n 多語言支持
 
 ---
 
-祝開發愉快！如有問題，請參考官方文檔或提交 Issue。
+祝開發愉快！如有問題，請參考 [QUICKSTART.md](QUICKSTART.md) 或 http://localhost:8000/docs。

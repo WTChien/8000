@@ -23,12 +23,12 @@
 
 - Python 3.8+
 - 後端服務器正在運行（http://localhost:8000）
-- 虛擬環境已激活（`.venv` 目錄存在）
+- Firebase 金鑰已配置（或 `USE_FIRESTORE=false`）
 
 ### macOS / Linux
 
 ```bash
-cd /Users/twinb00551172/Desktop/file/8000
+cd /path/to/8000
 
 # 給腳本執行權限
 chmod +x run_test.sh

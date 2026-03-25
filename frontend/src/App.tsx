@@ -343,7 +343,7 @@ function App() {
     setDisplayNameInput(auth.user.display_name);
     setAuthToken(auth.access_token);
     setAuthUser(auth.user);
-    setMessage(showMessage ? `登入成功，歡迎 ${auth.user.display_name}` : null);
+    setMessage(showMessage ? `登入成功，歡迎評審 ${auth.user.display_name}` : null);
     setError(null);
     if (auth.user.role === 'admin') {
       setCurrentView('admin');
@@ -1027,7 +1027,7 @@ function App() {
             className="investment-input"
             value={displayNameInput}
             onChange={(e) => setDisplayNameInput(e.target.value)}
-            placeholder="例如：王老師"
+            placeholder="例如：王評審"
           />
         </div>
 
@@ -1049,7 +1049,7 @@ function App() {
         <h2>選擇專題發表廳</h2>
         <p>
           {isCampaignActive
-            ? '先看每個會場資訊再選擇加入，包含教室、評審老師與該會場專題組別。'
+            ? '先看每個會場資訊再選擇加入，包含教室、評審評審與該會場專題組別。'
             : '目前尚未啟動專題會，尚無會場資料可選擇。'}
         </p>
       </section>
@@ -1063,10 +1063,10 @@ function App() {
         {isCampaignActive && selectedVenue && (
           <div className="investment-item">
             <h3 style={{ marginBottom: 8 }}>{selectedVenue.name}</h3>
-            <p style={{ marginBottom: 8 }}>教室：<strong>{selectedVenue.classroom}</strong></p>
+            <p style={{ marginBottom: 8 }}>會場：<strong>{selectedVenue.classroom}</strong></p>
             <p style={{ marginBottom: 8 }}>
-              目前老師：
-              <strong>{selectedVenue.judges.length > 0 ? ` ${selectedVenue.judges.join('、')}` : ' 尚無老師加入'}</strong>
+              目前評審：
+              <strong>{selectedVenue.judges.length > 0 ? ` ${selectedVenue.judges.join('、')}` : ' 尚無評審加入'}</strong>
             </p>
             <p style={{ marginBottom: 8 }}>專題組別：</p>
             <div className="lobby-tags">
@@ -1530,7 +1530,7 @@ function App() {
             <div className="admin-modal venue-view-modal">
               <div className="venue-view-title-row">
                 <h3>{viewVenue?.classroom || viewVenue?.name || viewVenueId}</h3>
-                <span className="venue-view-classroom">教室：{viewVenue?.classroom || '未設定'}</span>
+                <span className="venue-view-classroom">會場：{viewVenue?.classroom || '未設定'}</span>
               </div>
 
               <div className="form-group">
@@ -1708,7 +1708,7 @@ function App() {
                 className="investment-input admin-modal-textarea"
                 value={setupNewMemberDraft}
                 onChange={(e) => setSetupNewMemberDraft(e.target.value)}
-                placeholder={'例如：\n王小明\n陳老師'}
+                placeholder={'例如：\n王小明\n陳評審'}
               />
             </div>
 
@@ -1981,8 +1981,8 @@ function App() {
                           onClick={() => setDashboardVenueId(venue.id)}
                         >
                           <h3>{venue.name}</h3>
-                          <p>教室：{venue.classroom}</p>
-                          <p>老師數：{venue.judges.length}</p>
+                          <p>會場：{venue.classroom}</p>
+                          <p>評審數：{venue.judges.length}</p>
                           <p>專題數：{venue.projects.length}</p>
                           {isOwnVenue && <p className="my-venue-label">我的會場</p>}
                         </button>

@@ -88,8 +88,8 @@ pip install -r requirements.txt
 curl http://localhost:8000/docs
 
 # 啟動後端（如未運行）
-cd /Users/twinb00551172/Desktop/file/8000
-.venv/bin/uvicorn backend.main:app --reload
+cd /path/to/8000
+python backend/main.py
 ```
 
 ### Admin 登錄失敗

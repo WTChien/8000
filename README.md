@@ -6,43 +6,51 @@
 
 **FundThePitch** 是一個完整的投資評分系統，評審會將固定預算（10,000 元）投資給各組專題。系統提供：
 
-- **評審投資介面 (Judge UI)**：評審分配預算、進行投資決策
-- **現場儀表板 (Dashboard)**：大螢幕實時顯示投資分配的動態長條圖
+- **Lobby 大廳**：評審登入、選擇會場並加入
+- **評審投資介面 (Judge UI)**：評審分配預算、暫存草稿或鎖定提交
+- **現場儀表板 (Dashboard)**：大螢幕實時顯示各會場投資動態，支援「頒獎典禮」逐一揭曉排名的簡報模式
+- **管理員面板 (Admin)**：管理場次、會場、評審成員、查詢歷史封存資料
 
 ## 🏗️ 技術架構
 
 ### 前端
-- **框架**：React.js 18.2.0
-- **狀態管理**：React Hooks (useState, useEffect)
-- **圖表庫**：Recharts
-- **HTTP 客戶端**：Axios
-- **樣式**：標準 CSS (無 Tailwind CSS)
+- **框架**：React 18.2.0 + **TypeScript**
+- **狀態管理**：React Hooks (useState, useEffect, useCallback, useMemo)
+- **圖表庫**：Recharts 2.10.0
+- **HTTP 客戶端**：Axios 1.6.0
+- **樣式**：標準 CSS（無 Tailwind CSS）
 
 ### 後端
-- **框架**：FastAPI
-- **伺服器**：Uvicorn
-- **資料庫**：Mock Data（設計為 NoSQL 結構，便於未來遷移至 Google Cloud Firestore）
+- **框架**：FastAPI 0.104.1
+- **伺服器**：Uvicorn 0.24.0
+- **資料庫**：Google Cloud Firestore（透過 firebase-admin 6.6.0）
+- **驗證**：JWT Bearer Token（自行管理 session），角色分為 `admin` / `judge`
 
 ## 📁 專案結構
 
 ```
 8000/
 ├── backend/
-│   └── main.py              # FastAPI 應用程式
+│   ├── main.py              # FastAPI 應用程式（所有路由與業務邏輯）
+│   ├── firestore_db.py      # Firestore 資料庫封裝層
+│   └── keys/
+│       └── fundthepitch-firebase-adminsdk-*.json  # Firebase 服務帳戶金鑰
 ├── frontend/
 │   ├── public/
 │   │   └── index.html       # HTML 入口
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── JudgeUI.tsx   # 評審投資介面
-│   │   │   └── Dashboard.tsx # 現場儀表板
+│   │   │   ├── JudgeUI.tsx  # 評審投資介面（草稿暫存 + 鎖定提交）
+│   │   │   └── Dashboard.tsx# 現場儀表板（投資比較圖 + 簡報模式）
 │   │   ├── styles/
 │   │   │   └── App.css      # 全域樣式
-│   │   ├── App.tsx          # 主應用元件
+│   │   ├── App.tsx          # 主應用元件（路由、Auth、Admin 面板）
 │   │   └── index.tsx        # React 進入點
-│   └── package.json         # 前端依賴
-├── README.md                # 專案說明
-└── requirements.txt         # Python 依賴 (可選)
+│   └── package.json
+├── requirements.txt         # Python 依賴
+├── test_automation.py       # 完整業務流程自動化測試
+├── run_test.sh / run_test.bat
+└── start.sh / start.bat     # 一鍵啟動腳本
 ```
 
 ## 🚀 快速開始
@@ -50,153 +58,158 @@
 ### 前置條件
 - Node.js >= 14.0
 - Python >= 3.8
-- npm 或 yarn
+- Firebase 服務帳戶金鑰（`backend/keys/` 目錄下的 `.json` 檔）
 
 ### 後端設定
 
 1. **安裝 Python 依賴**
 ```bash
-cd 8000
-pip install fastapi uvicorn python-multipart
+pip install -r requirements.txt
 ```
 
-2. **運行 FastAPI 伺服器**
+2. **確認 Firebase 金鑰**
+
+確保 `backend/keys/fundthepitch-firebase-adminsdk-*.json` 存在。
+若要停用 Firestore（純記憶體模式），可設定：
+```bash
+export USE_FIRESTORE=false
+```
+
+3. **運行 FastAPI 伺服器**
 ```bash
 python backend/main.py
+# 或
+uvicorn backend.main:app --reload --port 8000
 ```
 
 伺服器將在 `http://localhost:8000` 啟動。
-API 文檔可訪問：`http://localhost:8000/docs`
+API 文檔：`http://localhost:8000/docs`
 
 ### 前端設定
 
 1. **安裝 Node 依賴**
 ```bash
-cd frontend
-npm install
+cd frontend && npm install
 ```
 
-2. **設定 API 端點** (可選)
+2. **設定 API 端點**（可選）
 
-編輯 `frontend/src/components/JudgeUI.tsx` 和 `Dashboard.tsx`，修改 API_BASE_URL：
-```javascript
-const API_BASE_URL = 'http://localhost:8000';  // 或您的伺服器地址
+在 `frontend/.env` 中設定（預設為 `http://localhost:8000`）：
+```
+REACT_APP_API_URL=http://localhost:8000
 ```
 
-3. **運行前端開發伺服器**
+3. **開發模式**
 ```bash
-npm start
+npm start   # 開發伺服器 http://localhost:3000
 ```
 
-應用將在 `http://localhost:3000` 打開。
-
-## 📡 API 文檔
-
-### 1. GET `/api/projects`
-**功能**：取得所有專題列表與當前投資金額
-
-**回應**：
-```json
-{
-  "projects": [
-    {
-      "id": "proj_001",
-      "name": "AI聊天機器人",
-      "total_investment": 2500
-    }
-  ],
-  "total_budget": 10000,
-  "remaining_budget": 5000
+4. **正式建置**
+```bash
+npm run build   # 靜態檔案輸出至 frontend/build/
 ```
-  ## 🤖 自動化測試
 
-  完整的自動化測試腳本可驗證整個業務流程：
+## 📡 主要 API 端點
 
-  ```bash
-  # macOS / Linux
-  ./run_test.sh
+### 認證
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/api/judges/login` | 以姓名登入（judge / admin）|
+| POST | `/api/auth/login` | 以識別碼（email/phone）登入 |
+| POST | `/api/auth/request-verification` | 請求 OTP 驗證碼 |
+| POST | `/api/auth/verify` | 驗證 OTP 並取得 Token |
+| POST | `/api/auth/logout` | 登出（撤銷 Token）|
+| GET  | `/api/auth/me` | 取得目前登入使用者資訊 |
 
-  # Windows
-  run_test.bat
-  ```
+### 評審操作
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/judges/status` | 取得評審狀態（會場、是否已鎖定）|
+| GET  | `/api/judges/my-investment` | 取得本人已存投資分配 |
+| POST | `/api/judges/join-venue` | 加入指定會場 |
+| POST | `/api/judges/leave-venue` | 離開當前會場 |
+| POST | `/api/submit_investment` | 提交投資分配（`lock_submission: true` 為鎖定，`false` 為草稿）|
 
-  腳本會自動執行：
-  - ✓ 啟動場次
-  - ✓ 創建會場
-  - ✓ 添加評審成員
-  - ✓ 評審加入會場
-  - ✓ 模擬投資決策
-  - ✓ 查看投資結果
-  - ✓ 關閉場次並生成摘要
+### 資料查詢
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/projects?venue_id=` | 取得會場專題列表與各評審投資明細 |
+| GET  | `/api/venues` | 取得所有會場 |
+| GET  | `/api/judges` | 取得評審列表與投票狀態（相容舊介面）|
 
-  預設會使用姓名「管理員」登入管理員權限。詳細信息見 [TEST_AUTOMATION.md](TEST_AUTOMATION.md)
+### 管理員（需 admin token）
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/admin/system-state` | 場次總覽（當前 + 歷史 + 軟刪除）|
+| POST | `/api/admin/system/start` | 啟動新場次 |
+| POST | `/api/admin/system/close` | 關閉並封存當前場次 |
+| DELETE | `/api/admin/system/archives/{id}` | 軟刪除封存場次（30 天內可還原）|
+| POST | `/api/admin/system/archives/{id}/restore` | 還原軟刪除場次 |
+| DELETE | `/api/admin/system/archives/{id}/permanent-delete` | 永久刪除 |
+| GET/POST | `/api/admin/venues` | 查詢 / 新增會場 |
+| PUT/PATCH/DELETE | `/api/admin/venues/{id}` | 更新 / 設定專題 / 刪除會場 |
+| GET/POST | `/api/admin/members` | 查詢 / 新增成員 |
+| PATCH/DELETE | `/api/admin/members/{identifier}` | 更新 / 刪除成員 |
+| POST | `/api/admin/members/{identifier}/unlock` | 解除評審鎖定 |
+| POST | `/api/admin/reset-round` | 重置當前輪次投資數據 |
 
-  ---
-
-### 2. POST `/api/submit_investment`
-**功能**：提交投資分配
+### `POST /api/submit_investment` 詳細說明
 
 **請求**：
 ```json
 {
-  "investments": {
-    "proj_001": 2500,
-    "proj_002": 2500,
-    "proj_003": 2500,
-    "proj_004": 2500
-  },
-  "judge_id": "judge_001"
+  "investments": { "proj_001": 3000, "proj_002": 4000, "proj_003": 3000 },
+  "lock_submission": true
 }
 ```
 
-**驗證規則**：
-- ✅ 總投資金額必須等於 **10,000 元**
-- ✅ 每個專題的投資金額必須 **> 0**
-- ✅ 必須對 **所有專題** 進行投資
+**驗證規則（鎖定模式）**：
+- ✅ 總金額必須等於 **10,000 元**
+- ✅ 每個專題金額必須 **≥ 0**
 
-**成功回應**：
-```json
-{
-  "success": true,
-  "message": "投資分配成功！",
-  "updated_projects": [ ... ]
-}
+**草稿模式**（`lock_submission: false`）：
+- 允許金額不足 10,000，僅暫存供後續修改
+
+## 🤖 自動化測試
+
+```bash
+# macOS / Linux
+./run_test.sh
+
+# Windows
+run_test.bat
 ```
 
-**失敗回應**：
-```json
-{
-  "detail": "投資總額必須等於 10000 元，目前為 9000 元"
-}
-```
+詳細說明見 [TEST_AUTOMATION.md](TEST_AUTOMATION.md)
 
-### 3. GET `/api/judges`
-**功能**：取得評審列表與投票狀態
+## 🎨 前端功能
 
-### 4. GET `/`
-**功能**：API 根端點與說明
+### Lobby 大廳
+- 姓名登入（JWT Token 存於 localStorage）
+- 選擇會場後加入，自動切換至評審介面
+- Session 自動恢復（頁面重整不需重新登入）
 
-## 🎨 前端功能特性
-
-### 評審投資介面 (Judge UI)
-- 📊 **預算分配**：使用滑桿和數字輸入框
-- ✅ **即時驗證**：顯示剩餘預算，無效提交被禁用
-- 🎯 **評審選擇**：下拉菜單選擇評審身份
-- 📈 **預算摘要**：實時顯示已分配、剩餘及上限金額
+### 評審投資介面 (JudgeUI)
+- 每位評審固定 **10,000 元** 預算
+- 數字輸入框 + 滑桿雙向同步調整
+- **草稿暫存**（`lock_submission: false`）：可分次修改，不限總額
+- **鎖定提交**（`lock_submission: true`）：總額必須等於 10,000 元，提交後不可修改
+- 頁面載入時自動恢復已儲存的草稿
+- 上傳期間顯示 Loading 指示器防止重複提交
 
 ### 現場儀表板 (Dashboard)
-- 📊 **動態長條圖**：使用 Recharts 展示投資分配
-- 🔄 **自動輪詢**：每 2 秒自動更新數據
-- 🎨 **平滑動畫**：圖表更新時的過場效果
-- 📋 **詳細清單**：表格顯示各專題投資分配
-- 📈 **實時統計**：顯示總投資、投資專題數、最後更新時間
+- **即時投資比較圖**：Recharts 動態長條圖，每 2 秒輪詢更新
+- **各評審投資明細**：在圖表下方列出每位評審對各組的個別投資金額
+- **簡報（頒獎典禮）模式**：
+  - 凍結輪詢、逐一揭曉排名（由末位到第一名）
+  - 第一名有彩帶爆破動畫特效
+  - 可手動逐步揭曉或自動播放
 
-### 管理員面板
-- 👥 **成員管理**：按會場分組顯示成員，點擊開啟詳細資料 modal
-- ✏️ **成員編輯**：Modal 中支持修改成員資料（姓名、郵件、角色、會場分配）
-- 📊 **場次管理**：場次運行中自動隱藏「啟動場次」按鈕
-- 📋 **投資排名**：封存戰況中顯示全部專題投資金額排名，附帶會場標籤
-- 🔐 **身份驗證**：Admin、Judge、Manager 等角色權限管理
+### 管理員面板 (Admin)
+- **場次管理**：啟動 / 關閉場次，查看歷史封存，軟刪除（30 天可還原）
+- **會場管理**：新增 / 編輯 / 刪除會場，設定會場專題與評審名單
+- **成員管理**：新增評審、修改資料、解除鎖定、按場次篩選
+- **歷史查閱**：封存場次含完整投資排名與各會場摘要
 
 ## 🔄 數據流程
 

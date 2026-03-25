@@ -82,12 +82,21 @@ class ProjectResponse(BaseModel):
     total_investment: float
 
 
+class JudgeInvestmentResponse(BaseModel):
+    identifier: str
+    display_name: str
+    is_voted: bool
+    investments: Dict[str, float]
+    total_investment: float
+
+
 class ProjectsListResponse(BaseModel):
     projects: List[ProjectResponse]
     total_budget: float
     remaining_budget: float
     venue_id: Optional[str] = None
     venue_name: Optional[str] = None
+    judge_investments: List[JudgeInvestmentResponse] = []
 
 
 class VenueResponse(BaseModel):
@@ -1173,12 +1182,66 @@ def get_projects(venue_id: Optional[str] = Query(default=None)):
     total_budget = 10000
     current_total = sum(p["total_investment"] for p in current_projects)
 
+    judge_investments: List[JudgeInvestmentResponse] = []
+    if venue_id:
+        ensure_venue_project_store(venue_id)
+        project_ids = [str(project.get("id", "")) for project in current_projects]
+        judge_map = venue_judge_investments.get(venue_id, {})
+        scope_year = get_member_scope_year()
+        scope_campaign_id = get_member_scope_campaign_id()
+        venue_judges = [
+            user
+            for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
+            if normalize_role(user.get("role", "judge")) == "judge"
+            and user.get("assigned_venue_id") == venue_id
+        ]
+
+        known_identifiers = set()
+        for user in sorted(venue_judges, key=lambda row: str(row.get("display_name", ""))):
+            identifier = str(user.get("identifier", ""))
+            if not identifier:
+                continue
+            known_identifiers.add(identifier)
+            saved = judge_map.get(identifier, {})
+            investments = {
+                project_id: float(saved.get(project_id, 0))
+                for project_id in project_ids
+            }
+            judge_investments.append(
+                JudgeInvestmentResponse(
+                    identifier=identifier,
+                    display_name=str(user.get("display_name", identifier)),
+                    is_voted=bool(user.get("is_voted", False)),
+                    investments=investments,
+                    total_investment=sum(investments.values()),
+                )
+            )
+
+        # Keep any persisted judge allocations visible even if the account record is missing.
+        for identifier, saved in judge_map.items():
+            if identifier in known_identifiers:
+                continue
+            investments = {
+                project_id: float(saved.get(project_id, 0))
+                for project_id in project_ids
+            }
+            judge_investments.append(
+                JudgeInvestmentResponse(
+                    identifier=str(identifier),
+                    display_name=str(identifier),
+                    is_voted=True,
+                    investments=investments,
+                    total_investment=sum(investments.values()),
+                )
+            )
+
     return ProjectsListResponse(
         projects=[ProjectResponse(**p) for p in current_projects],
         total_budget=total_budget,
         remaining_budget=total_budget - current_total,
         venue_id=venue_id,
         venue_name=venue_name_by_id(venue_id) if venue_id else None,
+        judge_investments=judge_investments,
     )
 
 
