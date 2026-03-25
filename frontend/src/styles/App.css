@@ -1652,11 +1652,164 @@ body {
   }
 
   .podium-column {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
     flex: 1;
     max-width: 260px;
+  }
+
+  .podium-confetti-burst {
+    pointer-events: none;
+    position: absolute;
+    inset: -22px -40px auto;
+    height: 250px;
+    z-index: 3;
+    overflow: visible;
+  }
+
+  .confetti-origin {
+    position: absolute;
+    bottom: 22px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .confetti-origin-left {
+    left: 18px;
+  }
+
+  .confetti-origin-right {
+    right: 18px;
+  }
+
+  .confetti-piece {
+    position: absolute;
+    bottom: 0;
+    width: 14px;
+    height: 24px;
+    border-radius: 4px;
+    opacity: 0;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.22);
+  }
+
+  .confetti-origin-left .confetti-piece {
+    left: 0;
+    transform-origin: bottom center;
+    animation: confettiBlastLeft 1.45s cubic-bezier(0.16, 0.84, 0.32, 1) forwards;
+  }
+
+  .confetti-origin-right .confetti-piece {
+    right: 0;
+    transform-origin: bottom center;
+    animation: confettiBlastRight 1.45s cubic-bezier(0.16, 0.84, 0.32, 1) forwards;
+  }
+
+  .piece-1 {
+    background: #facc15;
+    animation-delay: 0.02s;
+  }
+
+  .piece-2 {
+    width: 12px;
+    height: 22px;
+    background: #fb7185;
+    animation-delay: 0.08s;
+  }
+
+  .piece-3 {
+    width: 10px;
+    height: 28px;
+    background: #38bdf8;
+    animation-delay: 0.14s;
+  }
+
+  .piece-4 {
+    width: 16px;
+    height: 18px;
+    background: #4ade80;
+    animation-delay: 0.18s;
+  }
+
+  .piece-5 {
+    width: 11px;
+    height: 30px;
+    background: #f97316;
+    animation-delay: 0.1s;
+  }
+
+  .piece-6 {
+    width: 12px;
+    height: 16px;
+    background: #c084fc;
+    animation-delay: 0.22s;
+  }
+
+  .piece-7 {
+    width: 9px;
+    height: 26px;
+    background: #f43f5e;
+    animation-delay: 0.05s;
+  }
+
+  .piece-8 {
+    width: 15px;
+    height: 20px;
+    background: #2dd4bf;
+    animation-delay: 0.16s;
+  }
+
+  .confetti-origin-left .piece-1 { --tx: -122px; --ty: -160px; --rot: -260deg; }
+  .confetti-origin-left .piece-2 { --tx: -88px; --ty: -198px; --rot: -190deg; }
+  .confetti-origin-left .piece-3 { --tx: -24px; --ty: -188px; --rot: -320deg; }
+  .confetti-origin-left .piece-4 { --tx: -138px; --ty: -108px; --rot: -210deg; }
+  .confetti-origin-left .piece-5 { --tx: -64px; --ty: -142px; --rot: -280deg; }
+  .confetti-origin-left .piece-6 { --tx: -156px; --ty: -174px; --rot: -240deg; }
+  .confetti-origin-left .piece-7 { --tx: -46px; --ty: -214px; --rot: -300deg; }
+  .confetti-origin-left .piece-8 { --tx: -114px; --ty: -132px; --rot: -225deg; }
+
+  .confetti-origin-right .piece-1 { --tx: 122px; --ty: -160px; --rot: 260deg; }
+  .confetti-origin-right .piece-2 { --tx: 88px; --ty: -198px; --rot: 190deg; }
+  .confetti-origin-right .piece-3 { --tx: 24px; --ty: -188px; --rot: 320deg; }
+  .confetti-origin-right .piece-4 { --tx: 138px; --ty: -108px; --rot: 210deg; }
+  .confetti-origin-right .piece-5 { --tx: 64px; --ty: -142px; --rot: 280deg; }
+  .confetti-origin-right .piece-6 { --tx: 156px; --ty: -174px; --rot: 240deg; }
+  .confetti-origin-right .piece-7 { --tx: 46px; --ty: -214px; --rot: 300deg; }
+  .confetti-origin-right .piece-8 { --tx: 114px; --ty: -132px; --rot: 225deg; }
+
+  @keyframes confettiBlastLeft {
+    0% {
+      opacity: 0;
+      transform: translate(0, 0) scale(0.5) rotate(0deg);
+    }
+    10% {
+      opacity: 1;
+    }
+    74% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translate(var(--tx), var(--ty)) scale(1) rotate(var(--rot));
+    }
+  }
+
+  @keyframes confettiBlastRight {
+    0% {
+      opacity: 0;
+      transform: translate(0, 0) scale(0.5) rotate(0deg);
+    }
+    10% {
+      opacity: 1;
+    }
+    74% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translate(var(--tx), var(--ty)) scale(1) rotate(var(--rot));
+    }
   }
 
   /* Project name + amount that floats above the rising block */
@@ -1866,6 +2019,54 @@ body {
       gap: 4px;
       padding-top: 8px;
     }
+
+    .podium-confetti-burst {
+      inset: -10px -18px auto;
+      height: 170px;
+    }
+
+    .confetti-origin {
+      bottom: 10px;
+      width: 18px;
+      height: 18px;
+    }
+
+    .confetti-origin-left {
+      left: 10px;
+    }
+
+    .confetti-origin-right {
+      right: 10px;
+    }
+
+    .confetti-piece {
+      width: 9px;
+      height: 14px;
+    }
+
+    .piece-3,
+    .piece-5,
+    .piece-7 {
+      height: 18px;
+    }
+
+    .confetti-origin-left .piece-1 { --tx: -62px; --ty: -88px; }
+    .confetti-origin-left .piece-2 { --tx: -44px; --ty: -104px; }
+    .confetti-origin-left .piece-3 { --tx: -12px; --ty: -98px; }
+    .confetti-origin-left .piece-4 { --tx: -70px; --ty: -58px; }
+    .confetti-origin-left .piece-5 { --tx: -28px; --ty: -74px; }
+    .confetti-origin-left .piece-6 { --tx: -78px; --ty: -90px; }
+    .confetti-origin-left .piece-7 { --tx: -18px; --ty: -112px; }
+    .confetti-origin-left .piece-8 { --tx: -58px; --ty: -70px; }
+
+    .confetti-origin-right .piece-1 { --tx: 62px; --ty: -88px; }
+    .confetti-origin-right .piece-2 { --tx: 44px; --ty: -104px; }
+    .confetti-origin-right .piece-3 { --tx: 12px; --ty: -98px; }
+    .confetti-origin-right .piece-4 { --tx: 70px; --ty: -58px; }
+    .confetti-origin-right .piece-5 { --tx: 28px; --ty: -74px; }
+    .confetti-origin-right .piece-6 { --tx: 78px; --ty: -90px; }
+    .confetti-origin-right .piece-7 { --tx: 18px; --ty: -112px; }
+    .confetti-origin-right .piece-8 { --tx: 58px; --ty: -70px; }
 
     .podium-block.rank-1 { height: 140px; }
     .podium-block.rank-2 { height: 100px; }

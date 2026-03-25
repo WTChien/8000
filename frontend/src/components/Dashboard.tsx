@@ -238,6 +238,30 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                   key={rank}
                   className={`podium-column ${colorClass}${isRevealed ? ' revealed' : ''}${!project ? ' empty' : ''}`}
                 >
+                  {rank === 1 && isRevealed && project && (
+                    <div className="podium-confetti-burst" aria-hidden="true">
+                      <div className="confetti-origin confetti-origin-left">
+                        <span className="confetti-piece piece-1" />
+                        <span className="confetti-piece piece-2" />
+                        <span className="confetti-piece piece-3" />
+                        <span className="confetti-piece piece-4" />
+                        <span className="confetti-piece piece-5" />
+                        <span className="confetti-piece piece-6" />
+                        <span className="confetti-piece piece-7" />
+                        <span className="confetti-piece piece-8" />
+                      </div>
+                      <div className="confetti-origin confetti-origin-right">
+                        <span className="confetti-piece piece-1" />
+                        <span className="confetti-piece piece-2" />
+                        <span className="confetti-piece piece-3" />
+                        <span className="confetti-piece piece-4" />
+                        <span className="confetti-piece piece-5" />
+                        <span className="confetti-piece piece-6" />
+                        <span className="confetti-piece piece-7" />
+                        <span className="confetti-piece piece-8" />
+                      </div>
+                    </div>
+                  )}
                   <div className="podium-info">
                     {isRevealed && project ? (
                       <>
