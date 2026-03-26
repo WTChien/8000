@@ -26,7 +26,7 @@ type SubmitMode = 'draft' | 'lock' | null;
 
 interface AuthUser {
   user_id: string;
-  role: 'admin' | 'judge';
+  role: 'super_admin' | 'admin' | 'judge';
   display_name: string;
   venue_id?: string | null;
   phone?: string | null;

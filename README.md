@@ -1,4 +1,493 @@
 # FundThePitch - 專題模擬投資評分系統
+FundThePitch 是一套用於畢業專題成果發表的互動式投資評分系統。評審會以固定預算對各組專題進行投資，系統提供會場操作、評審投資、即時戰況看板，以及管理員場次與成員管理功能。
+
+## 專案概述
+
+系統包含四個主要部分：
+- Lobby 大廳：登入、選擇會場、進入評審流程
+- 評審投資介面：分配 10,000 元預算，可暫存或鎖定送出
+- 戰況儀表板：即時顯示各會場專題投資結果，支援簡報揭榜模式
+- 管理員面板：管理場次、封存歷史、會場、成員與管理者綁定
+
+## 技術架構
+
+### 前端
+- React 18
+- TypeScript
+- Axios
+- Recharts
+- 標準 CSS
+
+### 後端
+- FastAPI
+- Uvicorn
+- Firestore（透過 firebase-admin）
+- Bearer Token session 驗證
+
+## 角色模型
+| 角色 | 說明 |
+|------|------|
+| `super_admin` | 全系統唯一最高管理者，可管理所有管理者、場次與全域成員 |
+| `admin` | 系所管理者，可管理場次下的會場與評審 |
+| `judge` | 評審，可加入會場並提交投資 |
+
+補充規則：
+- `super_admin` 與 `admin` 為全域帳號，不綁定特定場次
+- `judge` 會依場次或年份作用域保存
+- 未啟動專題會時，系統仍可先建立使用者；此時評審資料會落在當前年份作用域
+
+## 專案結構
+
+```text
+8000/
+├── backend/
+│   ├── main.py
+│   ├── firestore_db.py
+│   └── keys/
+│       └── fundthepitch-firebase-adminsdk-*.json
+├── frontend/
+│   ├── public/
+│   │   └── index.html
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Dashboard.tsx
+│   │   │   └── JudgeUI.tsx
+│   │   ├── styles/
+│   │   │   └── App.css
+│   │   ├── App.tsx
+│   │   └── index.tsx
+│   ├── build/
+│   └── package.json
+├── requirements.txt
+├── start.sh
+├── start.bat
+└── README.md
+```
+
+## 快速開始
+
+### 前置條件
+
+- Node.js 14 以上
+- Python 3.8 以上
+- Firebase 服務帳戶金鑰放在 `backend/keys/`
+
+### 後端啟動
+
+1. 安裝 Python 依賴
+
+```bash
+pip install -r requirements.txt
+```
+
+2. 確認 Firebase 金鑰存在
+
+預設會使用：
+
+```text
+backend/keys/fundthepitch-firebase-adminsdk-fbsvc-81129424c7.json
+```
+
+3. 啟動後端
+
+```bash
+python backend/main.py
+```
+
+目前後端預設埠號為 `9000`。
+
+- API Base URL: `http://localhost:9000`
+- Swagger Docs: `http://localhost:9000/docs`
+
+若要關閉 Firestore，改用純記憶體模式：
+
+```bash
+export USE_FIRESTORE=false
+```
+
+### 前端啟動
+
+1. 安裝前端依賴
+
+```bash
+cd frontend
+npm install
+```
+
+2. 建議設定 API 位置
+
+在 `frontend/.env` 建立：
+
+```env
+REACT_APP_API_URL=http://localhost:9000
+```
+
+3. 啟動前端開發環境
+
+```bash
+npm start
+```
+
+預設前端會在 `http://localhost:3000`。
+
+### 使用一鍵啟動
+
+根目錄可直接使用：
+
+```bash
+./start.sh
+```
+
+或在 Windows 使用：
+
+```bat
+start.bat
+```
+
+## 登入與識別碼規則
+
+系統目前有兩種登入方式：
+
+### 1. 姓名登入
+
+前端登入畫面使用 `POST /api/judges/login`，送出 `display_name`。
+
+後端會把姓名轉成內部 identifier：
+
+```text
+name::{display_name.lower()}
+```
+
+例如：
+
+- `C` -> `name::c`
+- `王小明` -> `name::王小明`
+
+這個 identifier 是內部帳號鍵值，不是畫面顯示名稱。
+
+### 2. Email / 手機登入
+
+使用 `POST /api/auth/login`，帳號識別值直接為 email 或手機號碼。
+
+### Firestore 文件 ID 為什麼會看到 `2026__name::c`
+
+Firestore `verified_users` 集合的文件 ID 會加入場次或年份作用域。
+
+常見形式：
+
+- `2026__name::c`
+- `campaign_<campaign_id>__name::c`
+
+這代表：
+
+- `name::c` 是使用者 identifier
+- `2026__` 是未啟動專題會時的年份作用域
+- `campaign_<campaign_id>__` 是啟動專題會後的場次作用域
+
+因此在 Firebase Console 看到 `2026__name::c` 是正常的；顯示名稱仍然是 `C` 或你輸入的姓名。
+
+## 場次與成員作用域
+
+### 未啟動專題會時
+
+- 仍可建立使用者
+- 評審資料會綁到當前年份，例如 `2026`
+- `super_admin` 可以先整理全域管理者與評審
+
+### 啟動專題會後
+
+- 評審成員會綁定到目前 `campaign_id`
+- 會場、專題、投資資料依該場次運作
+- 關閉場次後可進入封存與歷史查閱
+
+## 管理員面板功能
+
+### 場次管理
+
+- 啟動新場次
+- 關閉並封存當前場次
+- 軟刪除封存資料
+- 30 天內可還原最近刪除
+- 永久刪除封存資料
+
+### 會場管理
+
+- 新增、編輯、刪除會場
+- 設定會場專題
+- 綁定評審到會場
+
+### 成員管理
+
+- 新增評審與系所管理者
+- 編輯姓名與角色
+- 解除評審鎖定
+- 將評審拖拉到管理者底下進行綁定
+- 拖拉移動時顯示確認 modal
+- 確認後顯示獨立 loading modal，直到後端回應完成
+- `super_admin` 在無啟動場次時，會依專題會分組顯示管理者與評審
+
+## 評審流程
+
+### Lobby
+
+- 姓名登入
+- 自動恢復已儲存 session
+- 若已加入會場，可直接回到評審畫面
+
+### Judge UI
+
+- 每位評審固定預算 10,000 元
+- 可先暫存草稿
+- 鎖定送出後不可修改
+- 載入時自動帶回既有草稿
+
+### Dashboard
+
+- 顯示各專題目前投資總額
+- 顯示各評審投資明細
+- 支援簡報揭榜模式
+
+## 主要 API
+
+### 認證
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/api/judges/login` | 以姓名登入，必要時自動建立評審帳號 |
+| POST | `/api/auth/login` | 以 email / phone 登入 |
+| POST | `/api/auth/request-verification` | 請求驗證碼 |
+| POST | `/api/auth/verify` | 驗證 OTP |
+| POST | `/api/auth/logout` | 登出 |
+| GET | `/api/auth/me` | 取得目前登入者 |
+
+### 評審
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/judges/status` | 取得目前評審狀態 |
+| GET | `/api/judges/my-investment` | 取得本人投資資料 |
+| POST | `/api/judges/join-venue` | 加入會場 |
+| POST | `/api/judges/leave-venue` | 離開會場 |
+| POST | `/api/submit_investment` | 暫存或送出投資 |
+
+### 查詢
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/projects?venue_id=` | 查詢會場專題與投資明細 |
+| GET | `/api/venues` | 查詢會場 |
+| GET | `/api/judges` | 查詢評審名單 |
+
+### 管理員
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/admin/system-state` | 查詢場次狀態 |
+| POST | `/api/admin/system/start` | 啟動新場次 |
+| POST | `/api/admin/system/close` | 關閉場次 |
+| DELETE | `/api/admin/system/archives/{campaign_id}` | 軟刪除封存場次 |
+| POST | `/api/admin/system/archives/{campaign_id}/restore` | 還原封存場次 |
+| DELETE | `/api/admin/system/archives/{campaign_id}/permanent-delete` | 永久刪除封存場次 |
+| GET, POST | `/api/admin/venues` | 查詢 / 新增會場 |
+| PUT, PATCH, DELETE | `/api/admin/venues/{id}` | 更新 / 設定專題 / 刪除會場 |
+| GET, POST | `/api/admin/members` | 查詢 / 新增成員 |
+| PATCH, DELETE | `/api/admin/members/{identifier}` | 更新 / 刪除成員 |
+| PATCH | `/api/admin/members/{identifier}/status` | 更新會場、送出狀態或管理者綁定 |
+| POST | `/api/admin/members/{identifier}/unlock` | 解除鎖定 |
+
+## 環境變數
+
+### 後端
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `USE_FIRESTORE` | `true` | 是否使用 Firestore |
+| `FIREBASE_CREDENTIALS_PATH` | `backend/keys/...json` | Firebase 金鑰路徑 |
+| `DEV_BYPASS_VERIFICATION` | `true` | 開發時可略過驗證碼流程 |
+| `TOKEN_TTL_HOURS` | `48` | session 存活時間 |
+| `CODE_TTL_SECONDS` | `300` | OTP 有效秒數 |
+| `VERIFIED_ACCESS_DAYS` | `2` | 驗證後帳號可用天數 |
+| `ARCHIVE_RETENTION_DAYS` | `30` | 軟刪除保留天數 |
+| `SUPER_ADMIN_NAME` | 空字串 | 啟動時自動建立最高管理者 |
+
+### 前端
+
+| 變數 | 建議值 | 說明 |
+|------|--------|------|
+| `REACT_APP_API_URL` | `http://localhost:9000` | 前端 API Base URL |
+
+## 備註
+
+- `start.sh` 目前會啟動後端於 `9000` 埠
+- 若前端無法連到後端，先確認 `REACT_APP_API_URL` 是否為 `http://localhost:9000`
+- Firebase Console 顯示的是文件 ID，不等於使用者畫面名稱
+
+伺服器將在 `http://localhost:8000` 啟動。
+API 文檔：`http://localhost:8000/docs`
+
+### 前端設定
+
+1. **安裝 Node 依賴**
+```bash
+cd frontend && npm install
+```
+
+2. **設定 API 端點**（可選）
+
+在 `frontend/.env` 中設定（預設為 `http://localhost:8000`）：
+```
+REACT_APP_API_URL=http://localhost:8000
+```
+
+3. **開發模式**
+```bash
+npm start   # 開發伺服器 http://localhost:3000
+```
+
+4. **正式建置**
+```bash
+npm run build   # 靜態檔案輸出至 frontend/build/
+```
+
+## 📡 主要 API 端點
+
+### 認證
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/api/judges/login` | 以姓名登入（任意角色）|
+| POST | `/api/auth/login` | 以識別碼（email/phone）登入 |
+| POST | `/api/auth/request-verification` | 請求 OTP 驗證碼 |
+| POST | `/api/auth/verify` | 驗證 OTP 並取得 Token |
+| POST | `/api/auth/logout` | 登出（撤銷 Token）|
+| GET  | `/api/auth/me` | 取得目前登入使用者資訊 |
+
+### 評審操作
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/judges/status` | 取得評審狀態（會場、是否已鎖定）|
+| GET  | `/api/judges/my-investment` | 取得本人已存投資分配 |
+| POST | `/api/judges/join-venue` | 加入指定會場 |
+| POST | `/api/judges/leave-venue` | 離開當前會場 |
+| POST | `/api/submit_investment` | 提交投資分配（`lock_submission: true` 為鎖定，`false` 為草稿）|
+
+### 資料查詢
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/projects?venue_id=` | 取得會場專題列表與各評審投資明細 |
+| GET  | `/api/venues` | 取得所有會場 |
+| GET  | `/api/judges` | 取得評審列表與投票狀態 |
+
+### 管理員（需 admin 或 super_admin token）
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET  | `/api/admin/system-state` | 場次總覽（當前 + 歷史 + 軟刪除）|
+| POST | `/api/admin/system/start` | 啟動新場次 |
+| POST | `/api/admin/system/close` | 關閉並封存當前場次 |
+| DELETE | `/api/admin/system/archives/{id}` | 軟刪除封存場次（30 天內可還原）|
+| POST | `/api/admin/system/archives/{id}/restore` | 還原軟刪除場次 |
+| DELETE | `/api/admin/system/archives/{id}/permanent-delete` | 永久刪除 |
+| GET/POST | `/api/admin/venues` | 查詢 / 新增會場 |
+| PUT/PATCH/DELETE | `/api/admin/venues/{id}` | 更新 / 設定專題 / 刪除會場 |
+| GET/POST | `/api/admin/members` | 查詢 / 新增成員 |
+| PATCH/DELETE | `/api/admin/members/{identifier}` | 更新 / 刪除成員 |
+| POST | `/api/admin/members/{identifier}/unlock` | 解除評審鎖定 |
+| POST | `/api/admin/reset-round` | 重置當前輪次投資數據 |
+
+> **注意**：`POST /api/admin/members/{identifier}/authorize`（授予帳號權限）僅限 `super_admin` 使用。新增或提升 `admin` 角色也僅限 `super_admin`。
+
+### `POST /api/submit_investment` 詳細說明
+
+**請求**：
+```json
+{
+  "investments": { "proj_001": 3000, "proj_002": 4000, "proj_003": 3000 },
+  "lock_submission": true
+}
+```
+
+**驗證規則（鎖定模式）**：
+- ✅ 總金額必須等於 **10,000 元**
+- ✅ 每個專題金額必須 **≥ 0**
+
+**草稿模式**（`lock_submission: false`）：
+- 允許金額不足 10,000，僅暫存供後續修改
+
+## 🎨 前端功能
+
+### Lobby 大廳
+- 姓名登入（JWT Token 存於 localStorage）
+- 選擇會場後加入，自動切換至評審介面
+- Session 自動恢復（頁面重整不需重新登入）
+
+### 評審投資介面 (JudgeUI)
+- 每位評審固定 **10,000 元** 預算
+- 數字輸入框 + 滑桿雙向同步調整
+- **草稿暫存**（`lock_submission: false`）：可分次修改，不限總額
+- **鎖定提交**（`lock_submission: true`）：總額必須等於 10,000 元，提交後不可修改
+- 頁面載入時自動恢復已儲存的草稿
+- 上傳期間顯示 Loading 指示器防止重複提交
+
+### 現場儀表板 (Dashboard)
+- **即時投資比較圖**：Recharts 動態長條圖，每 2 秒輪詢更新
+- **各評審投資明細**：在圖表下方列出每位評審對各組的個別投資金額
+- **簡報（頒獎典禮）模式**：
+  - 凍結輪詢、逐一揭曉排名（由末位到第一名）
+  - 第一名有彩帶爆破動畫特效
+  - 可手動逐步揭曉或自動播放
+
+### 管理員面板 (Admin)
+- **場次管理**：啟動 / 關閉場次，查看歷史封存，軟刪除（30 天可還原）
+- **會場管理**：新增 / 編輯 / 刪除會場，設定會場專題與評審名單
+- **成員管理**：
+  - `super_admin` 可在無場次情況下管理所有系所管理者帳號
+  - `admin` 可管理當前場次的評審帳號
+- **歷史查閱**：封存場次含完整投資排名與各會場摘要
+
+## 🔄 數據流程
+
+```
+評審 → JudgeUI 表單 → POST /api/submit_investment → Backend 驗證 & 更新
+                                                        ↓
+                                              Firestore 持久化
+                                                        ↓
+Dashboard (polling 每 2 秒) ← GET /api/projects ← 取得最新數據
+```
+
+## 🎯 業務邏輯
+
+### 投資分配規則
+1. 每位評審擁有 **10,000 元** 的固定預算
+2. 每個專題 **必須** 獲得投資（投資金額 > 0）
+3. 預算必須 **完全分配**（總和 = 10,000）
+4. 無法分配到超過預算的金額
+
+### 驗證流程
+- 前端：在 UI 中即時驗證，提供使用者反饋
+- 後端：在 API 層驗證，確保資料完整性
+
+## 📱 響應式設計
+
+應用支援響應式設計，適配以下設備：
+- 🖥️ 桌上型電腦（1920px+）
+- 💻 平板（768px - 1024px）
+- 📱 手機（480px - 768px）
+
+## 📋 環境變數
+
+創建 `.env` 文件（可選）：
+```env
+REACT_APP_API_URL=http://localhost:8000
+```
+
+## 📙 使用 FastAPI 自動文檔
+
+訪問 `http://localhost:8000/docs` 使用 Swagger UI 測試所有 API。
+
+---
+
+**系統名稱**：FundThePitch  
+**版本**：2.0.0  
+**最後更新**：2026 年 3 月
 
 > 一個用於畢業專題成果發表的互動評分投資系統
 

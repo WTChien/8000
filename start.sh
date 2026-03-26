@@ -30,8 +30,8 @@ fi
 python3 main.py &
 BACKEND_PID=$!
 echo -e "${GREEN}✅ 後端服務器啟動 (PID: $BACKEND_PID)${NC}"
-echo "   URL: http://localhost:8000"
-echo "   API 文檔: http://localhost:8000/docs"
+echo "   URL: http://localhost:9000"
+echo "   API 文檔: http://localhost:9000/docs"
 sleep 2
 cd ..
 echo ""
@@ -63,8 +63,8 @@ echo "✨ 系統已成功啟動！${NC}"
 echo "=========================================="
 echo ""
 echo "📍 前端地址: http://localhost:3000"
-echo "📍 後端地址: http://localhost:8000"
-echo "📍 API 文檔: http://localhost:8000/docs"
+echo "📍 後端地址: http://localhost:9000"
+echo "📍 API 文檔: http://localhost:9000/docs"
 echo ""
 echo "⌨️  按 Ctrl+C 停止所有服務"
 echo ""

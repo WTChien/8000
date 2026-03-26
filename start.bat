@@ -38,8 +38,8 @@ if errorlevel 1 (
 
 start "FundThePitch Backend" cmd /k "cd /d %~dp0backend && python main.py"
 echo [OK] 後端服務器啟動
-echo    URL: http://localhost:8000
-echo    API 文檔: http://localhost:8000/docs
+echo    URL: http://localhost:9000
+echo    API 文檔: http://localhost:9000/docs
 echo.
 
 REM Start frontend in a new window
@@ -58,8 +58,8 @@ echo [OK] 系統已成功啟動！
 echo ==========================================
 echo.
 echo Frontend: http://localhost:3000
-echo Backend : http://localhost:8000
-echo API Docs: http://localhost:8000/docs
+echo Backend : http://localhost:9000
+echo API Docs: http://localhost:9000/docs
 echo.
 if defined _oldcp chcp %_oldcp% >nul
 pause

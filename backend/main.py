@@ -14,9 +14,35 @@ from pydantic import BaseModel
 from firestore_db import FirestoreDB
 
 
+def seed_super_admin() -> None:
+    """若 SUPER_ADMIN_NAME 環境變數已設定且系統中尚無 super_admin，自動建立之。"""
+    if not SUPER_ADMIN_NAME:
+        return
+    display_name = normalize_display_name(SUPER_ADMIN_NAME)
+    if not display_name:
+        return
+    existing_admins = [
+        row for row in list_verified_users()
+        if normalize_role(row.get("role", "judge")) == "super_admin"
+    ]
+    if existing_admins:
+        return  # 已有 super_admin，略過
+    identifier = build_name_identifier(display_name)
+    access_until = now_utc() + timedelta(days=365 * 10)  # 長期有效
+    upsert_verified_user(
+        identifier,
+        display_name,
+        "super_admin",
+        access_until,
+        global_scope=True,
+    )
+    print(f"[startup] 已建立最高管理者：{display_name}")
+
+
 def initialize_startup_state() -> None:
     restore_active_campaign_state()
     initialize_venue_projects()
+    seed_super_admin()
 
 
 @asynccontextmanager
@@ -68,6 +94,7 @@ TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "48"))
 CODE_TTL_SECONDS = int(os.getenv("CODE_TTL_SECONDS", "300"))
 VERIFIED_ACCESS_DAYS = int(os.getenv("VERIFIED_ACCESS_DAYS", "2"))
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
+SUPER_ADMIN_NAME = os.getenv("SUPER_ADMIN_NAME", "").strip()
 
 PHONE_PATTERN = re.compile(r"^09\d{8}$")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -109,7 +136,7 @@ class VenueResponse(BaseModel):
 
 class SessionUser(BaseModel):
     user_id: str
-    role: Literal["admin", "judge"]
+    role: Literal["super_admin", "admin", "judge"]
     display_name: str
     identifier: str
     venue_id: Optional[str] = None
@@ -143,7 +170,7 @@ class VerificationConfirmRequest(BaseModel):
 
 class AuthorizeJudgeRequest(BaseModel):
     identifier: str
-    role: Literal["judge", "admin"] = "judge"
+    role: Literal["judge", "admin"] = "judge"  # super_admin granted separately
 
 
 class JoinVenueRequest(BaseModel):
@@ -166,12 +193,12 @@ class VenueProjectsUpdateRequest(BaseModel):
 
 class MemberCreateRequest(BaseModel):
     display_name: str
-    role: Literal["judge", "admin"] = "judge"
+    role: Literal["judge", "admin"] = "judge"  # super_admin cannot be created via this endpoint
 
 
 class MemberUpdateRequest(BaseModel):
     display_name: Optional[str] = None
-    role: Optional[Literal["judge", "admin"]] = None
+    role: Optional[Literal["judge", "admin"]] = None  # super_admin role cannot be set via member update
 
 
 class JudgeResponse(BaseModel):
@@ -213,7 +240,7 @@ class AdminOverviewResponse(BaseModel):
 class JudgeStatusResponse(BaseModel):
     identifier: str
     display_name: str
-    role: Literal["admin", "judge"]
+    role: Literal["super_admin", "admin", "judge"]
     assigned_venue_id: Optional[str] = None
     is_voted: bool
     campaign_year: Optional[int] = None
@@ -257,6 +284,7 @@ class AdminSystemStateResponse(BaseModel):
 class MemberStatusUpdateRequest(BaseModel):
     assigned_venue_id: Optional[str] = None
     is_voted: Optional[bool] = None
+    manager_identifier: Optional[str] = None
 
 
 def now_utc() -> datetime:
@@ -295,8 +323,11 @@ def normalize_display_name(value: str) -> str:
     return normalized
 
 
-def normalize_role(value: object) -> Literal["admin", "judge"]:
-    return "admin" if str(value) == "admin" else "judge"
+def normalize_role(value: object) -> Literal["super_admin", "admin", "judge"]:
+    s = str(value)
+    if s == "super_admin":
+        return "super_admin"
+    return "admin" if s == "admin" else "judge"
 
 
 def normalize_campaign_year(value: Optional[int]) -> int:
@@ -673,6 +704,54 @@ def get_verified_user(
     return None
 
 
+def find_verified_user_any_scope(identifier: str) -> Optional[dict]:
+    candidates = [
+        row
+        for row in list_verified_users()
+        if str(row.get("identifier", "")) == identifier
+    ]
+    if not candidates:
+        return None
+
+    # Prefer admin record if it exists in any campaign scope.
+    for row in candidates:
+        if normalize_role(row.get("role", "judge")) == "admin":
+            return row
+    return candidates[0]
+
+
+def get_verified_user_with_fallback(
+    identifier: str,
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+    allow_legacy: bool = False,
+) -> Optional[dict]:
+    scoped = get_verified_user(
+        identifier,
+        campaign_year=campaign_year,
+        campaign_id=campaign_id,
+        allow_legacy=allow_legacy,
+    )
+    if scoped:
+        return scoped
+    return find_verified_user_any_scope(identifier)
+
+
+def is_global_admin_record(record: dict) -> bool:
+    return normalize_role(record.get("role", "judge")) in {"super_admin", "admin"}
+
+
+def ensure_single_super_admin(next_identifier: str) -> None:
+    admin_identifiers = {
+        str(row.get("identifier", ""))
+        for row in list_verified_users()
+        if normalize_role(row.get("role", "judge")) == "super_admin"
+    }
+    admin_identifiers.discard("")
+    if admin_identifiers and admin_identifiers != {next_identifier}:
+        raise HTTPException(status_code=400, detail="系統僅允許一位最高管理員")
+
+
 def list_verified_users(campaign_year: Optional[int] = None, campaign_id: Optional[str] = None) -> List[dict]:
     if db.enabled:
         return db.list_verified_users(campaign_year=campaign_year, campaign_id=campaign_id)
@@ -692,13 +771,22 @@ def upsert_verified_user(
     access_until: datetime,
     campaign_year: Optional[int] = None,
     campaign_id: Optional[str] = None,
+    global_scope: bool = False,
 ) -> None:
-    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
-    if scope_campaign_id:
-        scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year)
+    # Both super_admin and admin are global roles — never campaign-scoped.
+    if global_scope or role in {"super_admin", "admin"}:
+        global_scope = True
+        scope_campaign_id = None
+        scope_year = None
+        existing = get_verified_user(identifier, allow_legacy=True) or {}
     else:
-        scope_year = get_member_scope_year(campaign_year)
-    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
+        scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+        if scope_campaign_id:
+            scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year)
+        else:
+            scope_year = get_member_scope_year(campaign_year)
+        existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
+
     payload = {
         "identifier": identifier,
         "display_name": display_name,
@@ -706,6 +794,7 @@ def upsert_verified_user(
         "access_until": access_until.isoformat(),
         "assigned_venue_id": existing.get("assigned_venue_id"),
         "is_voted": bool(existing.get("is_voted", False)),
+        "manager_identifier": existing.get("manager_identifier") if role == "judge" else None,
         "campaign_year": scope_year,
         "campaign_id": scope_campaign_id,
     }
@@ -728,9 +817,19 @@ def upsert_verified_user(
             )
         if payload["is_voted"]:
             db.set_verified_user_voted(identifier, True, campaign_year=scope_year, campaign_id=scope_campaign_id)
+        if payload["manager_identifier"]:
+            db.set_verified_user_manager(
+                identifier,
+                payload["manager_identifier"],
+                campaign_year=scope_year,
+                campaign_id=scope_campaign_id,
+            )
         return
 
-    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = payload
+    if global_scope:
+        verified_users[identifier] = payload
+    else:
+        verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = payload
 
 
 def update_verified_user_role(
@@ -794,6 +893,36 @@ def set_verified_user_voted(
         return
 
     existing["is_voted"] = voted
+    existing["campaign_year"] = scope_year
+    existing["campaign_id"] = scope_campaign_id
+    verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
+
+
+def set_verified_user_manager(
+    identifier: str,
+    manager_identifier: Optional[str],
+    campaign_year: Optional[int] = None,
+    campaign_id: Optional[str] = None,
+) -> None:
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    scope_year = resolve_campaign_year_by_id(scope_campaign_id, campaign_year) if scope_campaign_id else get_member_scope_year(campaign_year)
+    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
+
+    if normalize_role(existing.get("role", "judge")) != "judge":
+        raise HTTPException(status_code=400, detail="僅能設定評審的管理者")
+
+    if db.enabled:
+        db.set_verified_user_manager(
+            identifier,
+            manager_identifier,
+            campaign_year=scope_year,
+            campaign_id=scope_campaign_id,
+        )
+        return
+
+    existing["manager_identifier"] = manager_identifier
     existing["campaign_year"] = scope_year
     existing["campaign_id"] = scope_campaign_id
     verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
@@ -1258,8 +1387,13 @@ def auth_me(user: SessionUser = Depends(get_current_user)):
 
 
 @app.get("/api/judges/status", response_model=JudgeStatusResponse)
-def judge_status(user: SessionUser = Depends(require_roles("judge", "admin"))):
-    record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
+def judge_status(user: SessionUser = Depends(require_roles("super_admin", "judge", "admin"))):
+    record = get_verified_user_with_fallback(
+        user.identifier,
+        campaign_year=user.campaign_year,
+        campaign_id=user.campaign_id,
+        allow_legacy=True,
+    )
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者資料")
 
@@ -1306,7 +1440,12 @@ def login_with_identifier(data: IdentifierRequest):
     identifier, _ = detect_identifier_type(data.identifier)
     scope_year = get_member_scope_year()
     scope_campaign_id = get_member_scope_campaign_id()
-    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
+    record = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
     if not record:
         raise HTTPException(status_code=404, detail="帳號尚未驗證，請先取得驗證碼")
 
@@ -1316,24 +1455,32 @@ def login_with_identifier(data: IdentifierRequest):
 
     refreshed_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
     normalized_role = normalize_role(record.get("role"))
+    is_global = normalized_role in {"super_admin", "admin"}
+    if normalized_role == "super_admin":
+        ensure_single_super_admin(identifier)
     upsert_verified_user(
         identifier=identifier,
         display_name=str(record.get("display_name", "未命名使用者")),
         role=normalized_role,
         access_until=refreshed_until,
-        campaign_year=scope_year,
-        campaign_id=scope_campaign_id,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
+        global_scope=is_global,
     )
 
-    current_record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or record
+    current_record = (
+        get_verified_user(identifier, allow_legacy=True)
+        if is_global
+        else get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    ) or record
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalized_role,
         display_name=str(current_record.get("display_name", "未命名使用者")),
         venue_id=current_record.get("assigned_venue_id"),
-        campaign_year=scope_year,
-        campaign_id=scope_campaign_id,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -1345,21 +1492,41 @@ def login_with_name(data: NameLoginRequest):
     identifier = build_name_identifier(display_name)
     scope_year = get_member_scope_year()
     scope_campaign_id = get_member_scope_campaign_id()
-    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
+    existing = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
 
     role = normalize_role(existing.get("role") if existing else "judge")
+    is_global = role in {"super_admin", "admin"}
+    if role == "super_admin":
+        ensure_single_super_admin(identifier)
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    upsert_verified_user(
+        identifier,
+        display_name,
+        role,
+        access_until,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
+        global_scope=is_global,
+    )
 
-    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
+    record = (
+        get_verified_user(identifier, allow_legacy=True)
+        if is_global
+        else get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    ) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalize_role(record.get("role", role)),
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
-        campaign_year=scope_year,
-        campaign_id=scope_campaign_id,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -1408,24 +1575,44 @@ def verify_identifier(data: VerificationConfirmRequest):
         raise HTTPException(status_code=400, detail="驗證成功後必須填寫使用者姓名")
 
     verification_code_store.pop(identifier, None)
-    existing = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id, allow_legacy=True)
-    if existing and existing.get("role") in {"admin", "judge", "guest"}:
+    existing = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
+    if existing and existing.get("role") in {"super_admin", "admin", "judge", "guest"}:
         role = normalize_role(existing.get("role"))
     else:
         role = "judge"
+    is_global = role in {"super_admin", "admin"}
+    if role == "super_admin":
+        ensure_single_super_admin(identifier)
 
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    upsert_verified_user(
+        identifier,
+        display_name,
+        role,
+        access_until,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
+        global_scope=is_global,
+    )
 
-    record = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
+    record = (
+        get_verified_user(identifier, allow_legacy=True)
+        if is_global
+        else get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    ) or {}
     user = SessionUser(
         user_id=identifier,
         identifier=identifier,
         role=normalize_role(record.get("role", role)),
         display_name=str(record.get("display_name", display_name)),
         venue_id=record.get("assigned_venue_id"),
-        campaign_year=scope_year,
-        campaign_id=scope_campaign_id,
+        campaign_year=None if is_global else scope_year,
+        campaign_id=None if is_global else scope_campaign_id,
     )
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
@@ -1596,7 +1783,7 @@ def get_judges():
 
 
 @app.get("/api/admin/system-state", response_model=AdminSystemStateResponse)
-def get_admin_system_state(user: SessionUser = Depends(require_roles("admin"))):
+def get_admin_system_state(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     return AdminSystemStateResponse(
         current_campaign=serialize_campaign(current_campaign) if current_campaign else None,
@@ -1609,7 +1796,7 @@ def get_admin_system_state(user: SessionUser = Depends(require_roles("admin"))):
 def delete_archived_campaign(
     campaign_id: str,
     year: Optional[int] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     target_year = normalize_campaign_year(year)
@@ -1666,7 +1853,7 @@ def delete_archived_campaign(
 def restore_archived_campaign(
     campaign_id: str,
     year: Optional[int] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     target_year = normalize_campaign_year(year)
@@ -1710,7 +1897,7 @@ def restore_archived_campaign(
 def permanent_delete_recently_deleted_campaign(
     campaign_id: str,
     year: Optional[int] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     target_year = normalize_campaign_year(year)
@@ -1750,7 +1937,7 @@ def permanent_delete_recently_deleted_campaign(
 @app.post("/api/admin/system/start", response_model=SystemCampaignResponse)
 def start_system_campaign(
     data: SystemStartRequest,
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     global current_campaign
@@ -1783,7 +1970,7 @@ def start_system_campaign(
 
 
 @app.post("/api/admin/system/close", response_model=SystemCampaignResponse)
-def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
+def close_system_campaign(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     global current_campaign
 
@@ -1812,7 +1999,7 @@ def close_system_campaign(user: SessionUser = Depends(require_roles("admin"))):
 
 
 @app.get("/api/admin/overview", response_model=AdminOverviewResponse)
-def get_admin_overview(user: SessionUser = Depends(require_roles("admin"))):
+def get_admin_overview(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     return AdminOverviewResponse(
         active_sessions=len(auth_sessions),
@@ -1822,7 +2009,7 @@ def get_admin_overview(user: SessionUser = Depends(require_roles("admin"))):
 
 
 @app.post("/api/admin/venues", response_model=VenueResponse)
-def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_roles("admin"))):
+def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     ensure_system_active()
     name = data.name.strip()
@@ -1849,7 +2036,7 @@ def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_r
 def update_venue(
     venue_id: str,
     data: VenueUpdateRequest,
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     ensure_system_active()
@@ -1876,7 +2063,7 @@ def update_venue(
 def update_venue_projects(
     venue_id: str,
     data: VenueProjectsUpdateRequest,
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     ensure_system_active()
@@ -1912,7 +2099,7 @@ def update_venue_projects(
 
 
 @app.delete("/api/admin/venues/{venue_id}")
-def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin"))):
+def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     ensure_system_active()
 
@@ -1946,11 +2133,35 @@ def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("admin
 def list_members(
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
+
+    # super_admin with no campaign_id: return all manageable members across scopes.
+    if user.role == "super_admin" and not scope_campaign_id:
+        all_users = list_verified_users()
+        result = [
+            {
+                "identifier": account.get("identifier"),
+                "display_name": account.get("display_name"),
+                "role": normalize_role(account.get("role", "judge")),
+                "assigned_venue_id": account.get("assigned_venue_id"),
+                "manager_identifier": account.get("manager_identifier"),
+                "is_voted": bool(account.get("is_voted", False)),
+                "campaign_year": account.get("campaign_year"),
+                "campaign_id": account.get("campaign_id"),
+            }
+            for account in all_users
+            if (
+                str(account.get("identifier", "")).startswith("name::")
+                and normalize_role(account.get("role", "judge")) in {"admin", "judge"}
+            )
+        ]
+        return {"members": result, "year": scope_year, "campaign_id": None}
+
+    # Normal behavior: return campaign-scoped judge members
     members = []
     for account in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id):
         if str(account.get("identifier", "")).startswith("name::") and normalize_role(account.get("role", "judge")) == "judge":
@@ -1960,6 +2171,7 @@ def list_members(
                     "display_name": account.get("display_name"),
                     "role": normalize_role(account.get("role", "judge")),
                     "assigned_venue_id": account.get("assigned_venue_id"),
+                    "manager_identifier": account.get("manager_identifier"),
                     "is_voted": bool(account.get("is_voted", False)),
                     "campaign_year": scope_year,
                     "campaign_id": scope_campaign_id,
@@ -1973,18 +2185,36 @@ def create_member(
     data: MemberCreateRequest,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    if get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id):
+    if get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    ):
         raise HTTPException(status_code=400, detail="此姓名成員已存在")
 
+    if data.role == "admin":
+        if user.role != "super_admin":
+            raise HTTPException(status_code=403, detail="僅最高管理者可新增系所管理者")
+
+    is_global_role = data.role in {"super_admin", "admin"}
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
-    upsert_verified_user(identifier, display_name, data.role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    upsert_verified_user(
+        identifier,
+        display_name,
+        data.role,
+        access_until,
+        campaign_year=None if is_global_role else scope_year,
+        campaign_id=None if is_global_role else scope_campaign_id,
+        global_scope=is_global_role,
+    )
     return {
         "success": True,
         "member": {
@@ -1992,9 +2222,10 @@ def create_member(
             "display_name": display_name,
             "role": data.role,
             "assigned_venue_id": None,
+            "manager_identifier": None,
             "is_voted": False,
-            "campaign_year": scope_year,
-            "campaign_id": scope_campaign_id,
+            "campaign_year": None if is_global_role else scope_year,
+            "campaign_id": None if is_global_role else scope_campaign_id,
         },
     }
 
@@ -2005,19 +2236,55 @@ def update_member(
     data: MemberUpdateRequest,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    account = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
     next_display_name = normalize_display_name(data.display_name) if data.display_name is not None else str(account.get("display_name", ""))
     next_role = data.role or normalize_role(account.get("role", "judge"))
+    next_manager_identifier = account.get("manager_identifier") if next_role == "judge" else None
+
+    # Only super_admin can promote another user to admin
+    if next_role == "admin" and user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="僅最高管理者可授予系所管理者權限")
+
+    is_global_role = next_role in {"super_admin", "admin"}
     access_until = parse_time(account.get("access_until")) or (now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS))
-    upsert_verified_user(identifier, next_display_name, next_role, access_until, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    upsert_verified_user(
+        identifier,
+        next_display_name,
+        next_role,
+        access_until,
+        campaign_year=None if is_global_role else scope_year,
+        campaign_id=None if is_global_role else scope_campaign_id,
+        global_scope=is_global_role,
+    )
+
+    if next_role == "judge":
+        set_verified_user_manager(
+            identifier,
+            next_manager_identifier,
+            campaign_year=scope_year,
+            campaign_id=scope_campaign_id,
+        )
+
+    # Remove stale scoped copy when role changed to a global one
+    if is_global_role and db.enabled:
+        scoped_doc_id = db._identity_doc_id(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+        db._client.collection("verified_users").document(scoped_doc_id).delete()
+    elif is_global_role:
+        verified_users.pop(verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id), None)
+
     return {"success": True, "message": "成員資料已更新"}
 
 
@@ -2026,7 +2293,7 @@ def unlock_member(
     identifier: str,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
@@ -2045,7 +2312,7 @@ def update_member_status(
     data: MemberStatusUpdateRequest,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
@@ -2068,6 +2335,21 @@ def update_member_status(
     if data.is_voted is not None:
         set_verified_user_voted(identifier, data.is_voted, campaign_year=scope_year, campaign_id=scope_campaign_id)
 
+    if data.manager_identifier is not None:
+        manager_identifier = data.manager_identifier.strip() or None
+        if manager_identifier:
+            manager = get_verified_user_with_fallback(manager_identifier, allow_legacy=True)
+            if not manager:
+                raise HTTPException(status_code=404, detail="找不到指定管理者")
+            if normalize_role(manager.get("role", "judge")) != "admin":
+                raise HTTPException(status_code=400, detail="指定成員不是系所管理者")
+        set_verified_user_manager(
+            identifier,
+            manager_identifier,
+            campaign_year=scope_year,
+            campaign_id=scope_campaign_id,
+        )
+
     updated = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id) or {}
     return {
         "success": True,
@@ -2076,6 +2358,7 @@ def update_member_status(
             "display_name": updated.get("display_name", ""),
             "role": normalize_role(updated.get("role", "judge")),
             "assigned_venue_id": updated.get("assigned_venue_id"),
+            "manager_identifier": updated.get("manager_identifier"),
             "is_voted": bool(updated.get("is_voted", False)),
             "campaign_year": scope_year,
             "campaign_id": scope_campaign_id,
@@ -2088,20 +2371,45 @@ def delete_member(
     identifier: str,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
     _ = user
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
-    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    account = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
     if not account:
         raise HTTPException(status_code=404, detail="找不到成員")
 
+    # If deleting an admin, clear manager bindings from all assigned judges.
+    if normalize_role(account.get("role", "judge")) == "admin":
+        for row in list_verified_users():
+            if normalize_role(row.get("role", "judge")) != "judge":
+                continue
+            if str(row.get("manager_identifier") or "") != identifier:
+                continue
+            set_verified_user_manager(
+                str(row.get("identifier", "")),
+                None,
+                campaign_year=row.get("campaign_year"),
+                campaign_id=row.get("campaign_id"),
+            )
+
     if db.enabled:
-        doc_id = db._identity_doc_id(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+        if is_global_admin_record(account):
+            doc_id = db._identity_doc_id(identifier)
+        else:
+            doc_id = db._identity_doc_id(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
         db._client.collection("verified_users").document(doc_id).delete()
     else:
-        verified_users.pop(verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id), None)
+        if is_global_admin_record(account):
+            verified_users.pop(identifier, None)
+        else:
+            verified_users.pop(verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id), None)
 
     remove_sessions_for_identifier(identifier)
     return {"success": True, "message": "成員已刪除"}
@@ -2112,13 +2420,40 @@ def authorize_user(
     data: AuthorizeJudgeRequest,
     year: Optional[int] = Query(default=None),
     campaign_id: Optional[str] = Query(default=None),
-    user: SessionUser = Depends(require_roles("admin")),
+    user: SessionUser = Depends(require_roles("super_admin")),
 ):
     _ = user
     identifier = data.identifier.strip().lower()
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
-    update_verified_user_role(identifier, data.role, campaign_year=scope_year, campaign_id=scope_campaign_id)
+    existing = get_verified_user_with_fallback(
+        identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="此帳號尚未完成驗證")
+
+    display_name = str(existing.get("display_name", identifier))
+    access_until = parse_time(existing.get("access_until")) or (now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS))
+    upsert_verified_user(
+        identifier,
+        display_name,
+        data.role,
+        access_until,
+        campaign_year=None if data.role == "admin" else scope_year,
+        campaign_id=None if data.role == "admin" else scope_campaign_id,
+        global_scope=data.role == "admin",
+    )
+
+    is_global_role = data.role in {"super_admin", "admin"}
+    if is_global_role and db.enabled:
+        scoped_doc_id = db._identity_doc_id(identifier, campaign_year=scope_year, campaign_id=scope_campaign_id)
+        db._client.collection("verified_users").document(scoped_doc_id).delete()
+    elif is_global_role:
+        verified_users.pop(verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id), None)
+
     return {
         "success": True,
         "message": f"帳號 {identifier} 已授權為 {data.role}",
@@ -2126,7 +2461,7 @@ def authorize_user(
 
 
 @app.post("/api/admin/reset-round", response_model=AdminRoundResetResponse)
-def reset_round(user: SessionUser = Depends(require_roles("admin"))):
+def reset_round(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
     _ = user
     reset_investment_round_state()
 
@@ -2145,4 +2480,4 @@ def root():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=9000)

@@ -177,6 +177,7 @@ class FirestoreDB:
             data.setdefault("role", "judge")
             data.setdefault("is_voted", False)
             data.setdefault("assigned_venue_id", None)
+            data.setdefault("manager_identifier", None)
             data.setdefault("campaign_id", campaign_id)
             data.setdefault("campaign_year", campaign_year if doc_id != self._identity_doc_id(identifier) else None)
             return data
@@ -203,6 +204,7 @@ class FirestoreDB:
             "access_until": access_until.isoformat(),
             "updated_at": now_iso,
             "is_voted": False,
+            "manager_identifier": None,
             "campaign_year": campaign_year,
             "campaign_id": campaign_id,
         }
@@ -276,6 +278,28 @@ class FirestoreDB:
             merge=True,
         )
 
+    def set_verified_user_manager(
+        self,
+        identifier: str,
+        manager_identifier: Optional[str],
+        campaign_year: Optional[int] = None,
+        campaign_id: Optional[str] = None,
+    ) -> None:
+        if not self.enabled or self._client is None:
+            return
+
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier, campaign_year=campaign_year, campaign_id=campaign_id)
+        ).set(
+            {
+                "manager_identifier": manager_identifier,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "campaign_year": campaign_year,
+                "campaign_id": campaign_id,
+            },
+            merge=True,
+        )
+
     def list_verified_users(self, campaign_year: Optional[int] = None, campaign_id: Optional[str] = None) -> List[Dict[str, object]]:
         if not self.enabled or self._client is None:
             return []
@@ -294,6 +318,7 @@ class FirestoreDB:
             row.setdefault("role", "judge")
             row.setdefault("is_voted", False)
             row.setdefault("assigned_venue_id", None)
+            row.setdefault("manager_identifier", None)
             row.setdefault("campaign_id", campaign_id)
             row.setdefault("campaign_year", campaign_year)
             users.append(row)

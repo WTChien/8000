@@ -6,9 +6,9 @@ import Dashboard from './components/Dashboard';
 type ViewMode = 'lobby' | 'judge' | 'dashboard' | 'admin';
 type AdminTab = 'venues' | 'members';
 
-type Role = 'admin' | 'judge';
+type Role = 'super_admin' | 'admin' | 'judge';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:9000';
 const TOKEN_STORAGE_KEY = 'fundthepitch_auth_token';
 const USER_STORAGE_KEY = 'fundthepitch_auth_user';
 const DISPLAY_NAME_SESSION_KEY = 'fundthepitch_display_name';
@@ -52,9 +52,19 @@ interface AdminMember {
   display_name: string;
   role: Role;
   assigned_venue_id?: string | null;
+  manager_identifier?: string | null;
   is_voted: boolean;
   campaign_year?: number | null;
   campaign_id?: string | null;
+}
+
+interface CampaignMemberGroup {
+  key: string;
+  label: string;
+  admins: AdminMember[];
+  judges: AdminMember[];
+  judgesByManager: Record<string, AdminMember[]>;
+  sortTime: number;
 }
 
 interface SystemCampaign {
@@ -141,6 +151,15 @@ function App() {
   });
   const [judgeStatus, setJudgeStatus] = useState<JudgeStatus | null>(null);
 
+  const isAdminRole = (role?: Role | null): boolean =>
+    role === 'super_admin' || role === 'admin';
+  const isSuperAdmin = (role?: Role | null): boolean => role === 'super_admin';
+  const roleLabel = (role?: Role | null): string => {
+    if (role === 'super_admin') return '最高管理者';
+    if (role === 'admin') return '系所管理者';
+    return '評審';
+  };
+
   const [displayNameInput, setDisplayNameInput] = useState<string>(() => sessionStorage.getItem(DISPLAY_NAME_SESSION_KEY) || '');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isRestoringSession, setIsRestoringSession] = useState(false);
@@ -189,8 +208,18 @@ function App() {
   const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
   const [deletingMemberId, setDeletingMemberId] = useState<string | null>(null);
   const [unlockingMemberId, setUnlockingMemberId] = useState<string | null>(null);
+  const [assigningMemberId, setAssigningMemberId] = useState<string | null>(null);
+  const [draggingJudgeId, setDraggingJudgeId] = useState<string | null>(null);
+  const [pendingMoveJudge, setPendingMoveJudge] = useState<{ judge: AdminMember; managerIdentifier: string | null; managerName: string } | null>(null);
+  const [loadingMoveJudge, setLoadingMoveJudge] = useState<AdminMember | null>(null);
+  const [suppressMoveConfirm, setSuppressMoveConfirm] = useState<boolean>(() => localStorage.getItem('suppress_move_confirm') === 'true');
+  const [moveConfirmSuppressChecked, setMoveConfirmSuppressChecked] = useState(false);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [isEditingMember, setIsEditingMember] = useState(false);
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberRole, setNewMemberRole] = useState<'judge' | 'admin'>('judge');
+  const [isCreatingMember, setIsCreatingMember] = useState(false);
+  const [memberEditManager, setMemberEditManager] = useState<Record<string, string>>({});
 
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -240,6 +269,81 @@ function App() {
   );
 
   const judgeMembers = members.filter((member) => member.role === 'judge');
+  const adminMembers = members.filter((member) => member.role === 'admin');
+  // Members shown in the management panel.
+  // super_admin without an active campaign can manage all members globally.
+  const managedMembers = isSuperAdmin(authUser?.role) && !isCampaignActive ? members : judgeMembers;
+  const managerNameByIdentifier = useMemo(() => {
+    const rows: Record<string, string> = {};
+    adminMembers.forEach((member) => {
+      rows[member.identifier] = member.display_name;
+    });
+    return rows;
+  }, [adminMembers]);
+
+  const globalMembersByCampaign = useMemo<CampaignMemberGroup[]>(() => {
+    const grouped: Record<string, CampaignMemberGroup> = {};
+    const campaignOptionById: Record<string, CampaignOption> = {};
+    campaignOptions.forEach((option) => {
+      campaignOptionById[option.id] = option;
+    });
+
+    managedMembers.forEach((member) => {
+      if (member.role !== 'admin' && member.role !== 'judge') {
+        return;
+      }
+      const campaignId = member.campaign_id || '';
+      const option = campaignId ? campaignOptionById[campaignId] : undefined;
+      const key = campaignId || (member.campaign_year ? `year:${member.campaign_year}` : '__unknown__');
+
+      if (!grouped[key]) {
+        const year = option?.year ?? member.campaign_year ?? 0;
+        const label = option
+          ? `${option.year} / ${option.label}`
+          : (member.campaign_year ? `${member.campaign_year} / 未命名專題會` : '未分類專題會');
+        grouped[key] = {
+          key,
+          label,
+          admins: [],
+          judges: [],
+          judgesByManager: {},
+          sortTime: option ? new Date(option.started_at).getTime() : (year ? new Date(`${year}-01-01`).getTime() : 0)
+        };
+      }
+
+      if (member.role === 'admin') {
+        grouped[key].admins.push(member);
+      } else {
+        grouped[key].judges.push(member);
+      }
+    });
+
+    return Object.values(grouped)
+      .map((group) => {
+        const judgesByManager: Record<string, AdminMember[]> = {};
+        group.judges.forEach((member) => {
+          const managerKey = member.manager_identifier || '__unassigned__';
+          if (!judgesByManager[managerKey]) {
+            judgesByManager[managerKey] = [];
+          }
+          judgesByManager[managerKey].push(member);
+        });
+        Object.keys(judgesByManager).forEach((managerKey) => {
+          judgesByManager[managerKey].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'));
+        });
+        return {
+          ...group,
+          admins: [...group.admins].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant')),
+          judgesByManager,
+        };
+      })
+      .sort((a, b) => {
+        if (a.sortTime !== b.sortTime) {
+          return b.sortTime - a.sortTime;
+        }
+        return a.label.localeCompare(b.label, 'zh-Hant');
+      });
+  }, [campaignOptions, managedMembers]);
   const setupVenue = venues.find((venue) => venue.id === setupVenueId) || null;
 
   const parseAxiosError = useCallback((err: unknown): string => {
@@ -318,7 +422,7 @@ function App() {
   }, [authHeaders, refreshJudgeStatus]);
 
   useEffect(() => {
-    if (authUser?.role === 'admin' && !isCampaignActive && currentView === 'lobby') {
+    if (isAdminRole(authUser?.role) && !isCampaignActive && currentView === 'lobby') {
       setCurrentView('admin');
     }
   }, [authUser?.role, currentView, isCampaignActive]);
@@ -343,9 +447,9 @@ function App() {
     setDisplayNameInput(auth.user.display_name);
     setAuthToken(auth.access_token);
     setAuthUser(auth.user);
-    setMessage(showMessage ? `登入成功，歡迎評審 ${auth.user.display_name}` : null);
+    setMessage(showMessage ? `登入成功，歡迎${roleLabel(auth.user.role)} ${auth.user.display_name}` : null);
     setError(null);
-    if (auth.user.role === 'admin') {
+    if (isAdminRole(auth.user.role)) {
       setCurrentView('admin');
     } else if (auth.user.venue_id) {
       setCurrentView('judge');
@@ -507,11 +611,12 @@ function App() {
   };
 
   const loadMembers = useCallback(async (campaignIdOverride?: string) => {
-    if (!authHeaders || authUser?.role !== 'admin') {
+    if (!authHeaders || !isAdminRole(authUser?.role)) {
       return;
     }
     const campaignId = campaignIdOverride || selectedMemberCampaignId || activeCampaign?.id || '';
-    if (!campaignId) {
+    // super_admin can fetch members without a campaign (returns global admin members)
+    if (!campaignId && !isSuperAdmin(authUser?.role)) {
       setMembers([]);
       return;
     }
@@ -524,15 +629,20 @@ function App() {
       setMembers(response.data.members);
       if (response.data.campaign_id) {
         setSelectedMemberCampaignId(response.data.campaign_id);
+      } else if (isSuperAdmin(authUser?.role) && !isCampaignActive) {
+        // super_admin fetched global admins — no campaign_id to set
       }
       const names: Record<string, string> = {};
       const roles: Record<string, Role> = {};
+      const managers: Record<string, string> = {};
       for (const member of response.data.members) {
         names[member.identifier] = member.display_name;
         roles[member.identifier] = member.role;
+        managers[member.identifier] = member.manager_identifier || '';
       }
       setMemberEditName(names);
       setMemberEditRole(roles);
+      setMemberEditManager(managers);
     } catch (err: unknown) {
       setError('讀取成員失敗：' + parseAxiosError(err));
     } finally {
@@ -541,7 +651,7 @@ function App() {
   }, [authHeaders, authUser?.role, selectedMemberCampaignId, activeCampaign?.id, parseAxiosError]);
 
   const loadSystemState = useCallback(async () => {
-    if (!authHeaders || authUser?.role !== 'admin') {
+    if (!authHeaders || !isAdminRole(authUser?.role)) {
       return undefined;
     }
     try {
@@ -611,7 +721,7 @@ function App() {
   }, [loadMembers, loadSystemState, loadVenues, selectedMemberCampaignId]);
 
   useEffect(() => {
-    if (authUser?.role === 'admin') {
+    if (isAdminRole(authUser?.role)) {
       loadAdminData();
     }
   }, [authUser?.role, loadAdminData]);
@@ -955,22 +1065,84 @@ function App() {
     if (!authHeaders || updatingMemberId === identifier) {
       return;
     }
+    const current = members.find((member) => member.identifier === identifier);
+    const targetRole = memberEditRole[identifier] ?? current?.role ?? 'judge';
+    const managerIdentifier = (memberEditManager[identifier] || '').trim();
     try {
       setUpdatingMemberId(identifier);
       await axios.patch(
         `${API_BASE_URL}/api/admin/members/${encodeURIComponent(identifier)}`,
         {
           display_name: memberEditName[identifier],
-          role: memberEditRole[identifier]
+          role: targetRole
         },
-        { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+        {
+          headers: authHeaders,
+          params: {
+            campaign_id: current?.campaign_id || selectedMemberCampaignId,
+            year: current?.campaign_year,
+          },
+        }
       );
+
+      if (targetRole === 'judge' && isSuperAdmin(authUser?.role)) {
+        await axios.patch(
+          `${API_BASE_URL}/api/admin/members/${encodeURIComponent(identifier)}/status`,
+          { manager_identifier: managerIdentifier },
+          {
+            headers: authHeaders,
+            params: {
+              campaign_id: current?.campaign_id || selectedMemberCampaignId,
+              year: current?.campaign_year,
+            },
+          }
+        );
+      }
+
       setMessage('成員資料已更新');
       await loadMembers();
     } catch (err: unknown) {
       setError('更新成員失敗：' + parseAxiosError(err));
     } finally {
       setUpdatingMemberId(null);
+    }
+  };
+
+  const assignJudgeManager = async (judge: AdminMember, managerIdentifier: string | null) => {
+    if (!authHeaders || assigningMemberId === judge.identifier) {
+      return;
+    }
+    try {
+      setAssigningMemberId(judge.identifier);
+      await axios.patch(
+        `${API_BASE_URL}/api/admin/members/${encodeURIComponent(judge.identifier)}/status`,
+        { manager_identifier: managerIdentifier || '' },
+        {
+          headers: authHeaders,
+          params: {
+            campaign_id: judge.campaign_id || selectedMemberCampaignId,
+            year: judge.campaign_year,
+          },
+        }
+      );
+      setMessage(managerIdentifier
+        ? `已將 ${judge.display_name} 指派給 ${managerNameByIdentifier[managerIdentifier] || '管理者'}`
+        : `已取消 ${judge.display_name} 的管理者綁定`
+      );
+      await loadMembers('');
+    } catch (err: unknown) {
+      setError('指派管理者失敗：' + parseAxiosError(err));
+    } finally {
+      setAssigningMemberId(null);
+    }
+  };
+
+  const executeMoveJudge = async (judge: AdminMember, managerIdentifier: string | null) => {
+    setLoadingMoveJudge(judge);
+    try {
+      await assignJudgeManager(judge, managerIdentifier);
+    } finally {
+      setLoadingMoveJudge(null);
     }
   };
 
@@ -1010,6 +1182,49 @@ function App() {
       setError('解除鎖定失敗：' + parseAxiosError(err));
     } finally {
       setUnlockingMemberId(null);
+    }
+  };
+
+  const createMember = async () => {
+    if (!authHeaders || isCreatingMember) {
+      return;
+    }
+
+    const displayName = normalizeDisplayName(newMemberName);
+    if (!displayName) {
+      setError('請輸入成員姓名');
+      return;
+    }
+
+    const isGlobalAdminMode = isSuperAdmin(authUser?.role) && !isCampaignActive;
+    const targetRole: 'judge' | 'admin' = isGlobalAdminMode ? 'admin' : newMemberRole;
+    const targetCampaignId = selectedMemberCampaignId || activeCampaign?.id || '';
+
+    if (targetRole === 'judge' && !targetCampaignId) {
+      setError('新增評審前請先選擇場次，或先啟動場次');
+      return;
+    }
+
+    try {
+      setIsCreatingMember(true);
+      await axios.post(
+        `${API_BASE_URL}/api/admin/members`,
+        { display_name: displayName, role: targetRole },
+        {
+          headers: authHeaders,
+          params: targetRole === 'admin' ? undefined : { campaign_id: targetCampaignId },
+        }
+      );
+      setMessage(targetRole === 'admin' ? '系所管理者已新增' : '評審成員已新增');
+      setNewMemberName('');
+      if (!isGlobalAdminMode) {
+        setNewMemberRole('judge');
+      }
+      await loadMembers(targetRole === 'admin' ? '' : targetCampaignId);
+    } catch (err: unknown) {
+      setError('新增成員失敗：' + parseAxiosError(err));
+    } finally {
+      setIsCreatingMember(false);
     }
   };
 
@@ -1268,10 +1483,12 @@ function App() {
       {(!isCampaignActive || adminTab === 'members') && <section className="section judge-form">
         <div className="admin-section-heading admin-member-toolbar">
           <div>
-            <h3>成員管理</h3>
-            <p>依會場分組顯示成員。點擊姓名查看詳細資料。</p>
+            <h3>{isSuperAdmin(authUser?.role) && !isCampaignActive ? '全域成員管理' : '成員管理'}</h3>
+            <p>{isSuperAdmin(authUser?.role) && !isCampaignActive
+              ? '可管理所有既有成員，並將評審調整為系所管理者。點擊姓名檢視詳細資料。'
+              : '依會場分組顯示成員。點擊姓名查看詳細資料。'}</p>
           </div>
-          <div className="admin-year-picker">
+          {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && <div className="admin-year-picker">
             <label htmlFor="member-campaign">管理場次</label>
             <div className="input-group">
               <select
@@ -1291,16 +1508,138 @@ function App() {
                 {isLoadingMembers ? '讀取中...' : '讀取場次'}
               </button>
             </div>
-          </div>
+          </div>}
+          {isSuperAdmin(authUser?.role) && !isCampaignActive && (
+            <button
+              className="submit-button"
+              style={{ alignSelf: 'flex-end', minWidth: 120 }}
+              onClick={() => loadMembers('')}
+              disabled={isLoadingMembers}
+            >
+              {isLoadingMembers ? '讀取中...' : '整理管理者'}
+            </button>
+          )}
         </div>
 
-        {judgeMembers.length === 0 && (
+        {managedMembers.length === 0 && (
           <div className="investment-item">
-            <p>{selectedMemberCampaign ? `${selectedMemberCampaign.year} / ${selectedMemberCampaign.label}` : '目前所選場次'} 尚無成員資料。</p>
+            <p>
+              {isSuperAdmin(authUser?.role) && !isCampaignActive
+                ? '尚無可管理成員資料，可在下方新增。'
+                : `${selectedMemberCampaign ? `${selectedMemberCampaign.year} / ${selectedMemberCampaign.label}` : '目前所選場次'} 尚無成員資料。`}
+            </p>
           </div>
         )}
 
-        {judgeMembers.length > 0 && (() => {
+        {/* super_admin without campaign: manager-centric grouped list */}
+        {managedMembers.length > 0 && isSuperAdmin(authUser?.role) && !isCampaignActive && (
+          <>
+            {globalMembersByCampaign.map((campaignGroup) => (
+              <div key={campaignGroup.key} className="member-section">
+                <div className="member-section-title">專題會：{campaignGroup.label}</div>
+                <div className="member-role-subtitle member-role-subtitle-admin" style={{ marginBottom: 8 }}>
+                  系所管理者（{campaignGroup.admins.length}）與評審（{campaignGroup.judges.length}）
+                </div>
+                <div className="manager-board">
+                  {campaignGroup.admins.map((manager) => {
+                    const judges = campaignGroup.judgesByManager[manager.identifier] || [];
+                    return (
+                      <div
+                        key={manager.identifier}
+                        className="manager-column"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (!draggingJudgeId) return;
+                          const judge = campaignGroup.judges.find((m) => m.identifier === draggingJudgeId);
+                          if (!judge) return;
+                          if (judge.manager_identifier === manager.identifier) { setDraggingJudgeId(null); return; }
+                          setDraggingJudgeId(null);
+                          if (suppressMoveConfirm) {
+                            executeMoveJudge(judge, manager.identifier);
+                          } else {
+                            setMoveConfirmSuppressChecked(false);
+                            setPendingMoveJudge({ judge, managerIdentifier: manager.identifier, managerName: manager.display_name });
+                          }
+                        }}
+                      >
+                        <div
+                          className="member-card member-card-admin manager-card"
+                          onClick={() => { setSelectedMemberId(manager.identifier); setIsEditingMember(false); }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <div className="member-role-chip">管理者</div>
+                          <div className="member-name">{manager.display_name}</div>
+                        </div>
+                        <div className="manager-judge-list">
+                          {judges.length === 0 && <p className="manager-empty">尚未綁定評審</p>}
+                          {judges.map((judge) => (
+                            <div
+                              key={judge.identifier}
+                              className="member-card member-card-judge manager-judge-card"
+                              draggable={assigningMemberId !== judge.identifier}
+                              onDragStart={() => setDraggingJudgeId(judge.identifier)}
+                              onDragEnd={() => setDraggingJudgeId(null)}
+                              onClick={() => { setSelectedMemberId(judge.identifier); setIsEditingMember(false); }}
+                              role="button"
+                              tabIndex={0}
+                            >
+                              <div className="member-role-chip">評審</div>
+                              <div className="member-name">{judge.display_name}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div
+                    className="manager-column manager-column-unassigned"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (!draggingJudgeId) return;
+                      const judge = campaignGroup.judges.find((m) => m.identifier === draggingJudgeId);
+                      if (!judge) return;
+                      if (!judge.manager_identifier) { setDraggingJudgeId(null); return; }
+                      const currentManagerName = managerNameByIdentifier[judge.manager_identifier] || '管理者';
+                      setDraggingJudgeId(null);
+                      if (suppressMoveConfirm) {
+                        executeMoveJudge(judge, null);
+                      } else {
+                        setMoveConfirmSuppressChecked(false);
+                        setPendingMoveJudge({ judge, managerIdentifier: null, managerName: currentManagerName });
+                      }
+                    }}
+                  >
+                    <div className="member-section-title" style={{ marginBottom: 6 }}>未指派管理者</div>
+                    <div className="manager-judge-list">
+                      {(campaignGroup.judgesByManager.__unassigned__ || []).map((judge) => (
+                        <div
+                          key={judge.identifier}
+                          className="member-card member-card-judge manager-judge-card"
+                          draggable={assigningMemberId !== judge.identifier}
+                          onDragStart={() => setDraggingJudgeId(judge.identifier)}
+                          onDragEnd={() => setDraggingJudgeId(null)}
+                          onClick={() => { setSelectedMemberId(judge.identifier); setIsEditingMember(false); }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <div className="member-role-chip">評審</div>
+                          <div className="member-name">{judge.display_name}</div>
+                        </div>
+                      ))}
+                      {!(campaignGroup.judgesByManager.__unassigned__ || []).length && (
+                        <p className="manager-empty">目前沒有未指派評審</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+
+        {judgeMembers.length > 0 && !(isSuperAdmin(authUser?.role) && !isCampaignActive) && (() => {
           // 分組成員
           const groupedMembers = (() => {
             const groups: Record<string, AdminMember[]> = {};
@@ -1355,10 +1694,47 @@ function App() {
             </>
           );
         })()}
+
+        <div className="form-group" style={{ marginTop: 16 }}>
+          <label>
+            {isSuperAdmin(authUser?.role) && !isCampaignActive
+              ? '新增系所管理者'
+              : '新增成員'}
+          </label>
+          <div className="input-group">
+            <input
+              className="investment-input"
+              value={newMemberName}
+              onChange={(e) => setNewMemberName(e.target.value)}
+              placeholder={isSuperAdmin(authUser?.role) && !isCampaignActive ? '例如：資管系主任' : '例如：王評審'}
+            />
+            {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && (
+              <select
+                className="investment-input"
+                value={newMemberRole}
+                onChange={(e) => setNewMemberRole(e.target.value as 'judge' | 'admin')}
+              >
+                <option value="judge">評審</option>
+                {isSuperAdmin(authUser?.role) && <option value="admin">系所管理者</option>}
+              </select>
+            )}
+            <button
+              onClick={createMember}
+              disabled={isCreatingMember || !newMemberName.trim()}
+            >
+              {isCreatingMember ? '新增中...' : '新增'}
+            </button>
+          </div>
+          {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && !isCampaignActive && (
+            <p className="admin-modal-note" style={{ marginTop: 8 }}>
+              尚未啟動場次時，無法新增評審；最高管理者可先新增系所管理者。
+            </p>
+          )}
+        </div>
       </section>}
 
       {selectedMemberId && (() => {
-        const member = judgeMembers.find((m) => m.identifier === selectedMemberId);
+        const member = managedMembers.find((m) => m.identifier === selectedMemberId);
         if (!member) return null;
 
         return (
@@ -1371,13 +1747,15 @@ function App() {
                   <span>{member.display_name}</span>
                 </div>
                 <div className="info-row">
-                  <label>帳號：</label>
-                  <span>{member.identifier}</span>
-                </div>
-                <div className="info-row">
                   <label>角色：</label>
-                  <span>{member.role === 'judge' ? '評審' : '管理員'}</span>
+                  <span>{roleLabel(member.role)}</span>
                 </div>
+                {member.role === 'judge' && (
+                  <div className="info-row">
+                    <label>管理者：</label>
+                    <span>{member.manager_identifier ? (managerNameByIdentifier[member.manager_identifier] || member.manager_identifier) : '未指派'}</span>
+                  </div>
+                )}
                 <div className="info-row">
                   <label>會場：</label>
                   <span>{member.assigned_venue_id ? venues.find((v) => v.id === member.assigned_venue_id)?.name || member.assigned_venue_id : '尚未加入'}</span>
@@ -1407,9 +1785,28 @@ function App() {
                       onChange={(e) => setMemberEditRole((prev) => ({ ...prev, [member.identifier]: e.target.value as Role }))}
                     >
                       <option value="judge">評審</option>
-                      <option value="admin">管理員</option>
+                      {isSuperAdmin(authUser?.role) && <option value="admin">系所管理者</option>}
                     </select>
                   </div>
+                  {(memberEditRole[member.identifier] ?? member.role) === 'judge' && isSuperAdmin(authUser?.role) && (
+                    <div className="form-group">
+                      <label>綁定管理者</label>
+                      <select
+                        className="investment-input"
+                        value={memberEditManager[member.identifier] ?? member.manager_identifier ?? ''}
+                        onChange={(e) => setMemberEditManager((prev) => ({ ...prev, [member.identifier]: e.target.value }))}
+                      >
+                        <option value="">未指派</option>
+                        {[...adminMembers]
+                          .sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'))
+                          .map((admin) => (
+                            <option key={admin.identifier} value={admin.identifier}>
+                              {admin.display_name}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
                   {member.is_voted && (
                     <div className="form-note">
                       ⚠️ 此成員已鎖定投資。如要修改，需先解除鎖定。
@@ -1831,6 +2228,56 @@ function App() {
         </div>
       )}
 
+      {pendingMoveJudge && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal admin-confirm-modal">
+            <h3>{pendingMoveJudge.managerIdentifier ? '確認移動評審' : '確認移出群組'}</h3>
+            <p className="admin-modal-note">
+              {pendingMoveJudge.managerIdentifier
+                ? <>將「{pendingMoveJudge.judge.display_name}」移至「{pendingMoveJudge.managerName}」的群組？</>
+                : <>將「{pendingMoveJudge.judge.display_name}」從「{pendingMoveJudge.managerName}」群組移出？</>}
+            </p>
+            <label className="move-confirm-suppress-row">
+              <input
+                type="checkbox"
+                checked={moveConfirmSuppressChecked}
+                onChange={(e) => setMoveConfirmSuppressChecked(e.target.checked)}
+              />
+              不要再顯示
+            </label>
+            <div className="admin-modal-actions">
+              <button onClick={() => setPendingMoveJudge(null)}>取消</button>
+              <button
+                className="submit-button"
+                style={pendingMoveJudge.managerIdentifier
+                  ? { background: 'linear-gradient(135deg, #22c55e, #16a34a)' }
+                  : { background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+                onClick={() => {
+                  if (moveConfirmSuppressChecked) {
+                    localStorage.setItem('suppress_move_confirm', 'true');
+                    setSuppressMoveConfirm(true);
+                  }
+                  const { judge, managerIdentifier } = pendingMoveJudge;
+                  setPendingMoveJudge(null);
+                  executeMoveJudge(judge, managerIdentifier);
+                }}
+              >
+                確認
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loadingMoveJudge && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal admin-confirm-modal move-loading-modal">
+            <span className="move-confirm-spinner move-confirm-spinner-lg" />
+            <p className="move-loading-text">正在移動「{loadingMoveJudge.display_name}」...</p>
+          </div>
+        </div>
+      )}
+
       {pendingVenueDelete && (
         <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
           <div className="admin-modal admin-confirm-modal">
@@ -1899,7 +2346,7 @@ function App() {
           <h1>FundThePitch - 專題模擬投資評分系統</h1>
           {authUser && (
             <div className="nav-buttons">
-              {authUser.role === 'admin' && (
+              {isAdminRole(authUser.role) && (
                 <button
                   onClick={() => setCurrentView('admin')}
                   className={currentView === 'admin' ? 'active' : ''}
@@ -2009,7 +2456,7 @@ function App() {
           </div>
         )}
 
-        {authUser && currentView === 'admin' && authUser.role === 'admin' && renderAdmin()}
+        {authUser && currentView === 'admin' && isAdminRole(authUser.role) && renderAdmin()}
       </div>
     </div>
   );

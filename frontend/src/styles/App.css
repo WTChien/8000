@@ -283,6 +283,60 @@ body {
   background: linear-gradient(135deg, #ef4444, #f97316);
 }
 
+.move-confirm-suppress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.move-confirm-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.move-confirm-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.move-confirm-spinner-lg {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+  border-color: rgba(255, 255, 255, 0.2);
+  border-top-color: #fff;
+  margin-bottom: 12px;
+}
+
+.move-loading-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 36px 32px;
+}
+
+.move-loading-text {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+
 .admin-modal h3 {
   margin-bottom: 8px;
 }
@@ -2308,6 +2362,74 @@ body {
   gap: 12px;
 }
 
+.member-role-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.manager-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.manager-column {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-height: 180px;
+  padding: 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.manager-column-unassigned {
+  border-color: rgba(14, 165, 233, 0.5);
+  background: rgba(14, 165, 233, 0.07);
+}
+
+.manager-card {
+  margin-bottom: 2px;
+}
+
+.manager-judge-list {
+  display: grid;
+  gap: 8px;
+}
+
+.manager-judge-card {
+  padding: 12px 10px;
+}
+
+.manager-empty {
+  margin: 0;
+  padding: 12px 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.member-role-group {
+  display: grid;
+  gap: 10px;
+}
+
+.member-role-subtitle {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.member-role-subtitle-admin {
+  color: #4ade80;
+}
+
+.member-role-subtitle-judge {
+  color: #7dd3fc;
+}
+
 .member-card {
   border: 1px solid var(--border-soft);
   border-radius: 10px;
@@ -2323,6 +2445,49 @@ body {
   background: rgba(15, 23, 42, 0.75);
   transform: translateY(-2px);
   box-shadow: 0 8px 16px rgba(234, 179, 8, 0.1);
+}
+
+.member-card-admin {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: linear-gradient(160deg, rgba(34, 197, 94, 0.14), rgba(15, 23, 42, 0.72));
+}
+
+.member-card-admin:hover {
+  border-color: rgba(74, 222, 128, 0.9);
+  box-shadow: 0 10px 20px rgba(34, 197, 94, 0.22);
+}
+
+.member-card-judge {
+  border-color: rgba(14, 165, 233, 0.35);
+  background: linear-gradient(160deg, rgba(14, 165, 233, 0.11), rgba(15, 23, 42, 0.72));
+}
+
+.member-card-judge:hover {
+  border-color: rgba(56, 189, 248, 0.9);
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.2);
+}
+
+.member-role-chip {
+  display: inline-flex;
+  margin-bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.member-card-admin .member-role-chip {
+  border-color: rgba(34, 197, 94, 0.45);
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.member-card-judge .member-role-chip {
+  border-color: rgba(14, 165, 233, 0.45);
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.15);
 }
 
 .member-name {
