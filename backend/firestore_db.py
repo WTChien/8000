@@ -178,6 +178,7 @@ class FirestoreDB:
             data.setdefault("is_voted", False)
             data.setdefault("assigned_venue_id", None)
             data.setdefault("manager_identifier", None)
+            data.setdefault("managed_campaign_id", None)
             data.setdefault("campaign_id", campaign_id)
             data.setdefault("campaign_year", campaign_year if doc_id != self._identity_doc_id(identifier) else None)
             return data
@@ -205,6 +206,7 @@ class FirestoreDB:
             "updated_at": now_iso,
             "is_voted": False,
             "manager_identifier": None,
+            "managed_campaign_id": None,
             "campaign_year": campaign_year,
             "campaign_id": campaign_id,
         }
@@ -319,10 +321,29 @@ class FirestoreDB:
             row.setdefault("is_voted", False)
             row.setdefault("assigned_venue_id", None)
             row.setdefault("manager_identifier", None)
+            row.setdefault("managed_campaign_id", None)
             row.setdefault("campaign_id", campaign_id)
             row.setdefault("campaign_year", campaign_year)
             users.append(row)
         return sorted(users, key=lambda u: str(u.get("identifier", "")))
+
+    def set_verified_user_managed_campaign(
+        self,
+        identifier: str,
+        managed_campaign_id: Optional[str],
+    ) -> None:
+        if not self.enabled or self._client is None:
+            return
+
+        self._client.collection("verified_users").document(
+            self._identity_doc_id(identifier)
+        ).set(
+            {
+                "managed_campaign_id": managed_campaign_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            merge=True,
+        )
 
     def delete_verified_users_by_year(self, campaign_year: int) -> int:
         """Delete all verified users associated with a specific campaign year."""
@@ -352,6 +373,7 @@ class FirestoreDB:
         data = doc.to_dict() or {}
         data.setdefault("year", campaign_year)
         data.setdefault("current_campaign", None)
+        data.setdefault("active_campaigns_data", [])
         data.setdefault("campaign_history", [])
         data.setdefault("venues", [])
         data.setdefault("venue_projects", {})
@@ -366,6 +388,7 @@ class FirestoreDB:
         payload = {
             "year": campaign_year,
             "current_campaign": state.get("current_campaign"),
+            "active_campaigns_data": state.get("active_campaigns_data", []),
             "campaign_history": state.get("campaign_history", []),
             "venues": state.get("venues", []),
             "venue_projects": state.get("venue_projects", {}),
@@ -386,6 +409,7 @@ class FirestoreDB:
             if "year" not in data:
                 continue
             data.setdefault("current_campaign", None)
+            data.setdefault("active_campaigns_data", [])
             data.setdefault("campaign_history", [])
             data.setdefault("venues", [])
             data.setdefault("venue_projects", {})

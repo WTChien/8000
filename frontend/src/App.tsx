@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
+import { QRCodeCanvas } from 'qrcode.react';
 import JudgeUI from './components/JudgeUI';
 import Dashboard from './components/Dashboard';
 
 type ViewMode = 'lobby' | 'judge' | 'dashboard' | 'admin';
-type AdminTab = 'venues' | 'members';
+type AdminTab = 'campaigns' | 'venues' | 'members' | 'archives';
+type MemberSortTag = 'role' | 'campaign' | 'venue' | 'lock';
 
 type Role = 'super_admin' | 'admin' | 'judge';
 
@@ -53,18 +55,10 @@ interface AdminMember {
   role: Role;
   assigned_venue_id?: string | null;
   manager_identifier?: string | null;
+  managed_campaign_id?: string | null;
   is_voted: boolean;
   campaign_year?: number | null;
   campaign_id?: string | null;
-}
-
-interface CampaignMemberGroup {
-  key: string;
-  label: string;
-  admins: AdminMember[];
-  judges: AdminMember[];
-  judgesByManager: Record<string, AdminMember[]>;
-  sortTime: number;
 }
 
 interface SystemCampaign {
@@ -74,6 +68,7 @@ interface SystemCampaign {
   status: 'active' | 'closed';
   started_at: string;
   closed_at?: string | null;
+  invite_token?: string | null;
   summary?: {
     overall_total_investment?: number;
     venues?: Array<{
@@ -108,6 +103,7 @@ interface RecentlyDeletedCampaign extends SystemCampaign {
 
 interface AdminSystemState {
   current_campaign?: SystemCampaign | null;
+  active_campaigns_list?: SystemCampaign[];
   campaigns_by_year: Record<string, SystemCampaign[]>;
   recently_deleted_by_year: Record<string, RecentlyDeletedCampaign[]>;
 }
@@ -126,6 +122,13 @@ interface CampaignOption {
   started_at: string;
 }
 
+interface CampaignInviteInfo {
+  id: string;
+  year: number;
+  label: string;
+  status: 'active' | 'closed';
+}
+
 
 interface VenueProject {
   id: string;
@@ -141,6 +144,13 @@ interface VenueProjectsResponse {
 
 const normalizeDisplayName = (value: string): string => value.trim().replace(/\s+/g, ' ');
 const buildNameIdentifier = (displayName: string): string => `name::${displayName.toLowerCase()}`;
+const isAdminRole = (role?: Role | null): boolean => role === 'super_admin' || role === 'admin';
+const isSuperAdmin = (role?: Role | null): boolean => role === 'super_admin';
+const roleLabel = (role?: Role | null): string => {
+  if (role === 'super_admin') return '最高管理者';
+  if (role === 'admin') return '系所管理者';
+  return '評審';
+};
 
 function App() {
   const [currentView, setCurrentView] = useState<ViewMode>('lobby');
@@ -150,15 +160,6 @@ function App() {
     return raw ? (JSON.parse(raw) as AuthUser) : null;
   });
   const [judgeStatus, setJudgeStatus] = useState<JudgeStatus | null>(null);
-
-  const isAdminRole = (role?: Role | null): boolean =>
-    role === 'super_admin' || role === 'admin';
-  const isSuperAdmin = (role?: Role | null): boolean => role === 'super_admin';
-  const roleLabel = (role?: Role | null): string => {
-    if (role === 'super_admin') return '最高管理者';
-    if (role === 'admin') return '系所管理者';
-    return '評審';
-  };
 
   const [displayNameInput, setDisplayNameInput] = useState<string>(() => sessionStorage.getItem(DISPLAY_NAME_SESSION_KEY) || '');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -174,10 +175,11 @@ function App() {
   const [campaignLabelInput, setCampaignLabelInput] = useState('');
   const [selectedMemberCampaignId, setSelectedMemberCampaignId] = useState<string>('');
   const [adminSystemState, setAdminSystemState] = useState<AdminSystemState>({
+    active_campaigns_list: [],
     campaigns_by_year: {},
     recently_deleted_by_year: {}
   });
-  const [adminTab, setAdminTab] = useState<AdminTab>('members');
+  const [adminTab, setAdminTab] = useState<AdminTab>('campaigns');
   const [memberEditName, setMemberEditName] = useState<Record<string, string>>({});
   const [memberEditRole, setMemberEditRole] = useState<Record<string, Role>>({});
   const [setupVenueNameDraft, setSetupVenueNameDraft] = useState('');
@@ -193,36 +195,50 @@ function App() {
   const [isJoiningVenue, setIsJoiningVenue] = useState(false);
   const [isLeavingVenue, setIsLeavingVenue] = useState(false);
   const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [isLoadingAdminData, setIsLoadingAdminData] = useState(false);
   const [isCreatingVenue, setIsCreatingVenue] = useState(false);
   const [deletingVenueId, setDeletingVenueId] = useState<string | null>(null);
   const [pendingVenueDelete, setPendingVenueDelete] = useState<Venue | null>(null);
   const [selectedHistoryCampaign, setSelectedHistoryCampaign] = useState<SystemCampaign | null>(null);
   const [isStartingCampaign, setIsStartingCampaign] = useState(false);
-  const [isClosingCampaign, setIsClosingCampaign] = useState(false);
+  const [closingCampaignId, setClosingCampaignId] = useState<string | null>(null);
   const [restoringCampaignId, setRestoringCampaignId] = useState<string | null>(null);
   const [permanentDeletingCampaignId, setPermanentDeletingCampaignId] = useState<string | null>(null);
   const [pendingPermanentDelete, setPendingPermanentDelete] = useState<RecentlyDeletedCampaign | null>(null);
   const [viewVenueId, setViewVenueId] = useState<string | null>(null);
+  const [qrInviteCampaign, setQrInviteCampaign] = useState<SystemCampaign | null>(null);
   const [venueViewProjects, setVenueViewProjects] = useState<VenueProject[]>([]);
   const [isLoadingVenueView, setIsLoadingVenueView] = useState(false);
   const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
   const [deletingMemberId, setDeletingMemberId] = useState<string | null>(null);
   const [unlockingMemberId, setUnlockingMemberId] = useState<string | null>(null);
   const [assigningMemberId, setAssigningMemberId] = useState<string | null>(null);
+  const [draggingCampaignMemberId, setDraggingCampaignMemberId] = useState<string | null>(null);
   const [draggingJudgeId, setDraggingJudgeId] = useState<string | null>(null);
   const [pendingMoveJudge, setPendingMoveJudge] = useState<{ judge: AdminMember; managerIdentifier: string | null; managerName: string } | null>(null);
   const [loadingMoveJudge, setLoadingMoveJudge] = useState<AdminMember | null>(null);
-  const [suppressMoveConfirm, setSuppressMoveConfirm] = useState<boolean>(() => localStorage.getItem('suppress_move_confirm') === 'true');
-  const [moveConfirmSuppressChecked, setMoveConfirmSuppressChecked] = useState(false);
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [isEditingMember, setIsEditingMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'judge' | 'admin'>('judge');
   const [isCreatingMember, setIsCreatingMember] = useState(false);
   const [memberEditManager, setMemberEditManager] = useState<Record<string, string>>({});
+  const [memberSortTag, setMemberSortTag] = useState<MemberSortTag>('role');
 
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  // Invite-link state: populated when the user arrives via ?c=TOKEN
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteCampaign, setInviteCampaign] = useState<CampaignInviteInfo | null>(null);
+
+  // Refs that always reflect the latest render values, used inside useCallbacks
+  // to avoid those callbacks being recreated on every state change (infinite loop prevention).
+  const selectedMemberCampaignIdRef = useRef<string>('');
+  const activeCampaignIdRef = useRef<string | undefined>(undefined);
+  const isCampaignActiveRef = useRef<boolean>(false);
+  const userCampaignIdRef = useRef<string | undefined>(undefined);
+  const inviteTokenRef = useRef<string | null>(null);
 
   const authHeaders = useMemo(() => {
     if (!authToken) {
@@ -237,14 +253,33 @@ function App() {
   );
 
   const activeCampaign = adminSystemState.current_campaign ?? null;
-  const isCampaignActive = Boolean(activeCampaign);
+  const adminHasActiveCampaign = Boolean(activeCampaign);
+  const currentUserCampaignId = judgeStatus?.campaign_id || authUser?.campaign_id || null;
+  const isJudgeCampaignActive = Boolean(currentUserCampaignId || inviteCampaign?.status === 'active');
+  const isCampaignActive = isAdminRole(authUser?.role) ? adminHasActiveCampaign : isJudgeCampaignActive;
+  const canStartAnotherCampaign = isSuperAdmin(authUser?.role) || !adminHasActiveCampaign;
+  // Keep refs in sync so callbacks always read the latest values.
+  selectedMemberCampaignIdRef.current = selectedMemberCampaignId;
+  activeCampaignIdRef.current = activeCampaign?.id;
+  isCampaignActiveRef.current = adminHasActiveCampaign;
+  userCampaignIdRef.current = currentUserCampaignId || undefined;
+  inviteTokenRef.current = inviteToken;
   const campaignOptions = useMemo(() => {
     const rows: CampaignOption[] = [];
     const seen = new Set<string>();
 
+    (adminSystemState.active_campaigns_list ?? []).forEach((campaign) => {
+      if (!seen.has(campaign.id)) {
+        rows.push(campaign);
+        seen.add(campaign.id);
+      }
+    });
+
     if (adminSystemState.current_campaign?.id) {
-      rows.push(adminSystemState.current_campaign);
-      seen.add(adminSystemState.current_campaign.id);
+      if (!seen.has(adminSystemState.current_campaign.id)) {
+        rows.push(adminSystemState.current_campaign);
+        seen.add(adminSystemState.current_campaign.id);
+      }
     }
 
     Object.values(adminSystemState.campaigns_by_year).forEach((campaigns) => {
@@ -263,16 +298,29 @@ function App() {
     });
   }, [adminSystemState]);
 
-  const selectedMemberCampaign = useMemo(
-    () => campaignOptions.find((campaign) => campaign.id === selectedMemberCampaignId) || null,
-    [campaignOptions, selectedMemberCampaignId]
-  );
+  const displayedActiveCampaigns = useMemo(() => {
+    const allActive = adminSystemState.active_campaigns_list ?? [];
+    if (isSuperAdmin(authUser?.role)) {
+      return allActive;
+    }
+    if (!activeCampaign) {
+      return [];
+    }
+    return allActive.filter((campaign) => campaign.id === activeCampaign.id);
+  }, [adminSystemState.active_campaigns_list, authUser?.role, activeCampaign]);
+
+  const venueCampaignOptions = useMemo(() => {
+    const activeById = new Map((adminSystemState.active_campaigns_list ?? []).map((campaign) => [campaign.id, campaign]));
+    if (!isSuperAdmin(authUser?.role)) {
+      return activeCampaign ? [activeCampaign] : [];
+    }
+    return Array.from(activeById.values()).sort(
+      (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+    );
+  }, [adminSystemState.active_campaigns_list, authUser?.role, activeCampaign]);
 
   const judgeMembers = members.filter((member) => member.role === 'judge');
   const adminMembers = members.filter((member) => member.role === 'admin');
-  // Members shown in the management panel.
-  // super_admin without an active campaign can manage all members globally.
-  const managedMembers = isSuperAdmin(authUser?.role) && !isCampaignActive ? members : judgeMembers;
   const managerNameByIdentifier = useMemo(() => {
     const rows: Record<string, string> = {};
     adminMembers.forEach((member) => {
@@ -280,70 +328,84 @@ function App() {
     });
     return rows;
   }, [adminMembers]);
-
-  const globalMembersByCampaign = useMemo<CampaignMemberGroup[]>(() => {
-    const grouped: Record<string, CampaignMemberGroup> = {};
-    const campaignOptionById: Record<string, CampaignOption> = {};
-    campaignOptions.forEach((option) => {
-      campaignOptionById[option.id] = option;
+  const venueJudgeGroups = useMemo(() => {
+    const grouped: Record<string, AdminMember[]> = {};
+    judgeMembers.forEach((member) => {
+      const key = member.assigned_venue_id || '__unassigned__';
+      if (!grouped[key]) {
+        grouped[key] = [];
+      }
+      grouped[key].push(member);
     });
-
-    managedMembers.forEach((member) => {
-      if (member.role !== 'admin' && member.role !== 'judge') {
+    Object.keys(grouped).forEach((key) => {
+      grouped[key].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'));
+    });
+    return grouped;
+  }, [judgeMembers]);
+  const campaignMemberStats = useMemo(() => {
+    const stats: Record<string, { managers: number; judges: number }> = {};
+    members.forEach((member) => {
+      const key = member.role === 'admin'
+        ? (member.managed_campaign_id || '')
+        : (member.campaign_id || '');
+      if (!key) {
         return;
       }
-      const campaignId = member.campaign_id || '';
-      const option = campaignId ? campaignOptionById[campaignId] : undefined;
-      const key = campaignId || (member.campaign_year ? `year:${member.campaign_year}` : '__unknown__');
-
-      if (!grouped[key]) {
-        const year = option?.year ?? member.campaign_year ?? 0;
-        const label = option
-          ? `${option.year} / ${option.label}`
-          : (member.campaign_year ? `${member.campaign_year} / 未命名專題會` : '未分類專題會');
-        grouped[key] = {
-          key,
-          label,
-          admins: [],
-          judges: [],
-          judgesByManager: {},
-          sortTime: option ? new Date(option.started_at).getTime() : (year ? new Date(`${year}-01-01`).getTime() : 0)
-        };
+      if (!stats[key]) {
+        stats[key] = { managers: 0, judges: 0 };
       }
-
       if (member.role === 'admin') {
-        grouped[key].admins.push(member);
-      } else {
-        grouped[key].judges.push(member);
+        stats[key].managers += 1;
+      } else if (member.role === 'judge') {
+        stats[key].judges += 1;
       }
     });
+    return stats;
+  }, [members]);
 
-    return Object.values(grouped)
-      .map((group) => {
-        const judgesByManager: Record<string, AdminMember[]> = {};
-        group.judges.forEach((member) => {
-          const managerKey = member.manager_identifier || '__unassigned__';
-          if (!judgesByManager[managerKey]) {
-            judgesByManager[managerKey] = [];
-          }
-          judgesByManager[managerKey].push(member);
-        });
-        Object.keys(judgesByManager).forEach((managerKey) => {
-          judgesByManager[managerKey].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'));
-        });
-        return {
-          ...group,
-          admins: [...group.admins].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant')),
-          judgesByManager,
-        };
-      })
-      .sort((a, b) => {
-        if (a.sortTime !== b.sortTime) {
-          return b.sortTime - a.sortTime;
-        }
-        return a.label.localeCompare(b.label, 'zh-Hant');
-      });
-  }, [campaignOptions, managedMembers]);
+  const venueMemberStats = useMemo(() => {
+    const stats: Record<string, { managers: number; judges: number }> = {};
+    venues.forEach((venue) => {
+      const judges = venueJudgeGroups[venue.id] || [];
+      const managerSet = new Set(
+        judges
+          .map((judge) => judge.manager_identifier || '')
+          .filter((identifier) => Boolean(identifier))
+      );
+      stats[venue.id] = {
+        managers: managerSet.size,
+        judges: judges.length,
+      };
+    });
+    return stats;
+  }, [venues, venueJudgeGroups]);
+
+  const sortedMembersByTag = useMemo(() => {
+    const tagValue = (member: AdminMember): string => {
+      if (memberSortTag === 'role') {
+        return member.role === 'admin' ? '1-admin' : '2-judge';
+      }
+      if (memberSortTag === 'campaign') {
+        const campaignTag = member.role === 'admin'
+          ? (member.managed_campaign_id || '')
+          : (member.campaign_id || '');
+        return campaignTag || 'zz-unassigned';
+      }
+      if (memberSortTag === 'venue') {
+        return member.assigned_venue_id || 'zz-unassigned';
+      }
+      return member.is_voted ? '1-locked' : '2-editable';
+    };
+
+    return [...members].sort((a, b) => {
+      const aTag = tagValue(a);
+      const bTag = tagValue(b);
+      if (aTag !== bTag) {
+        return aTag.localeCompare(bTag, 'zh-Hant');
+      }
+      return a.display_name.localeCompare(b.display_name, 'zh-Hant');
+    });
+  }, [members, memberSortTag]);
   const setupVenue = venues.find((venue) => venue.id === setupVenueId) || null;
 
   const parseAxiosError = useCallback((err: unknown): string => {
@@ -353,9 +415,16 @@ function App() {
     return ((err.response?.data as { detail?: string } | undefined)?.detail || err.message);
   }, []);
 
-  const loadVenues = useCallback(async () => {
+  const loadVenues = useCallback(async (campaignId?: string) => {
     try {
-      const response = await axios.get<Venue[]>(`${API_BASE_URL}/api/venues`);
+      const preferredCampaignId = campaignId
+        || activeCampaignIdRef.current
+        || userCampaignIdRef.current
+        || selectedMemberCampaignIdRef.current
+        || undefined;
+      const response = await axios.get<Venue[]>(`${API_BASE_URL}/api/venues`, {
+        params: preferredCampaignId ? { campaign_id: preferredCampaignId } : undefined,
+      });
       setVenues(response.data);
       const firstVenueId = response.data[0]?.id;
       setSelectedVenueId((prev) => {
@@ -379,6 +448,34 @@ function App() {
     loadVenues();
   }, [loadVenues]);
 
+  useEffect(() => {
+    if (!authUser || isAdminRole(authUser.role)) {
+      return;
+    }
+    const scopedCampaignId = judgeStatus?.campaign_id || authUser.campaign_id || undefined;
+    loadVenues(scopedCampaignId);
+  }, [authUser, judgeStatus?.campaign_id, loadVenues]);
+
+  useEffect(() => {
+    const initInviteFromUrl = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const token = (params.get('c') || '').trim();
+      if (!token) {
+        return;
+      }
+
+      setInviteToken(token);
+      try {
+        const response = await axios.get<CampaignInviteInfo>(`${API_BASE_URL}/api/campaign/invite/${encodeURIComponent(token)}`);
+        setInviteCampaign(response.data);
+      } catch (err: unknown) {
+        setError('邀請連結載入失敗：' + parseAxiosError(err));
+      }
+    };
+
+    initInviteFromUrl();
+  }, [parseAxiosError]);
+
   const refreshJudgeStatus = useCallback(async (headers = authHeaders) => {
     if (!headers) {
       return;
@@ -401,10 +498,16 @@ function App() {
         if (!prev) {
           return prev;
         }
+        const nextCampaignYear = response.data.campaign_year ?? prev.campaign_year ?? null;
+        const nextCampaignId = response.data.campaign_id ?? prev.campaign_id ?? null;
+        if (prev.venue_id === nextVenueId && prev.campaign_year === nextCampaignYear && prev.campaign_id === nextCampaignId) {
+          return prev; // nothing changed; avoid creating a new object reference
+        }
         const nextUser = {
           ...prev,
           venue_id: nextVenueId,
-          campaign_year: response.data.campaign_year ?? prev.campaign_year ?? null
+          campaign_year: nextCampaignYear,
+          campaign_id: nextCampaignId,
         };
         localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
         return nextUser;
@@ -470,7 +573,8 @@ function App() {
 
     try {
       const response = await axios.post<AuthResponse>(`${API_BASE_URL}/api/judges/login`, {
-        display_name: normalizedName
+        display_name: normalizedName,
+        invite_token: inviteTokenRef.current || undefined,
       });
       saveAuth(response.data, showMessage);
       return true;
@@ -614,7 +718,7 @@ function App() {
     if (!authHeaders || !isAdminRole(authUser?.role)) {
       return;
     }
-    const campaignId = campaignIdOverride || selectedMemberCampaignId || activeCampaign?.id || '';
+    const campaignId = campaignIdOverride || selectedMemberCampaignIdRef.current || activeCampaignIdRef.current || '';
     // super_admin can fetch members without a campaign (returns global admin members)
     if (!campaignId && !isSuperAdmin(authUser?.role)) {
       setMembers([]);
@@ -629,7 +733,7 @@ function App() {
       setMembers(response.data.members);
       if (response.data.campaign_id) {
         setSelectedMemberCampaignId(response.data.campaign_id);
-      } else if (isSuperAdmin(authUser?.role) && !isCampaignActive) {
+      } else if (isSuperAdmin(authUser?.role) && !isCampaignActiveRef.current) {
         // super_admin fetched global admins — no campaign_id to set
       }
       const names: Record<string, string> = {};
@@ -648,7 +752,7 @@ function App() {
     } finally {
       setIsLoadingMembers(false);
     }
-  }, [authHeaders, authUser?.role, selectedMemberCampaignId, activeCampaign?.id, parseAxiosError]);
+  }, [authHeaders, authUser?.role, parseAxiosError]);
 
   const loadSystemState = useCallback(async () => {
     if (!authHeaders || !isAdminRole(authUser?.role)) {
@@ -660,6 +764,7 @@ function App() {
       });
       const normalizedState: AdminSystemState = {
         current_campaign: response.data.current_campaign ?? null,
+        active_campaigns_list: response.data.active_campaigns_list ?? [],
         campaigns_by_year: response.data.campaigns_by_year ?? {},
         recently_deleted_by_year: response.data.recently_deleted_by_year ?? {}
       };
@@ -670,24 +775,24 @@ function App() {
         if (activeId) {
           setSelectedMemberCampaignId(activeId);
         }
-        setAdminTab('venues');
+        setAdminTab((prev) => (prev === 'archives' ? prev : 'campaigns'));
       } else {
-        if (!selectedMemberCampaignId) {
-          const fallbackCampaign = Object.values(normalizedState.campaigns_by_year)
-            .flat()
+        if (!selectedMemberCampaignIdRef.current) {
+          const fallbackCampaign = [...(normalizedState.active_campaigns_list ?? []), ...Object.values(normalizedState.campaigns_by_year)
+            .flat()]
             .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
           if (fallbackCampaign?.id) {
             setSelectedMemberCampaignId(fallbackCampaign.id);
           }
         }
-        setAdminTab('members');
+        setAdminTab((prev) => (prev === 'archives' ? prev : 'campaigns'));
       }
       return normalizedState;
     } catch (err: unknown) {
       setError('讀取場次狀態失敗：' + parseAxiosError(err));
       return undefined;
     }
-  }, [authHeaders, authUser?.role, parseAxiosError, selectedMemberCampaignId]);
+  }, [authHeaders, authUser?.role, parseAxiosError]);
 
   const waitForSystemState = useCallback(
     async (
@@ -710,28 +815,55 @@ function App() {
   );
 
   const loadAdminData = useCallback(async () => {
-    const systemState = await loadSystemState();
-    await loadVenues();
-    const preferredCampaignId = systemState?.current_campaign?.id
-      || selectedMemberCampaignId
-      || Object.values(systemState?.campaigns_by_year ?? {})
-        .flat()
-        .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0]?.id;
-    await loadMembers(preferredCampaignId);
-  }, [loadMembers, loadSystemState, loadVenues, selectedMemberCampaignId]);
+    try {
+      setIsLoadingAdminData(true);
+      const systemState = await loadSystemState();
+      const preferredCampaignId = systemState?.current_campaign?.id
+        || systemState?.active_campaigns_list?.[0]?.id
+        || selectedMemberCampaignIdRef.current
+        || Object.values(systemState?.campaigns_by_year ?? {})
+          .flat()
+          .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0]?.id;
+      await loadVenues(preferredCampaignId);
+      await loadMembers(preferredCampaignId);
+    } finally {
+      setIsLoadingAdminData(false);
+    }
+  }, [loadMembers, loadSystemState, loadVenues]);
 
   useEffect(() => {
-    if (isAdminRole(authUser?.role)) {
+    if (isAdminRole(authUser?.role) && currentView === 'admin') {
       loadAdminData();
     }
-  }, [authUser?.role, loadAdminData]);
+  }, [authUser?.role, currentView, loadAdminData]);
 
   useEffect(() => {
-    if (adminTab === 'venues' && activeCampaign?.id && selectedMemberCampaignId !== activeCampaign.id) {
-      setSelectedMemberCampaignId(activeCampaign.id);
-      loadMembers(activeCampaign.id);
+    if (adminTab === 'venues' && selectedMemberCampaignId) {
+      loadMembers(selectedMemberCampaignId);
+      loadVenues(selectedMemberCampaignId);
     }
-  }, [adminTab, activeCampaign?.id, selectedMemberCampaignId, loadMembers]);
+  }, [adminTab, selectedMemberCampaignId, loadMembers, loadVenues]);
+
+  useEffect(() => {
+    if (adminTab !== 'venues' || selectedMemberCampaignId || venueCampaignOptions.length === 0) {
+      return;
+    }
+    setSelectedMemberCampaignId(venueCampaignOptions[0].id);
+  }, [adminTab, selectedMemberCampaignId, venueCampaignOptions]);
+
+  useEffect(() => {
+    if (adminTab !== 'members') {
+      return;
+    }
+    if (isSuperAdmin(authUser?.role)) {
+      loadMembers('');
+      return;
+    }
+    const scopeCampaignId = selectedMemberCampaignId || activeCampaign?.id || '';
+    if (scopeCampaignId) {
+      loadMembers(scopeCampaignId);
+    }
+  }, [adminTab, authUser?.role, selectedMemberCampaignId, activeCampaign?.id, loadMembers]);
 
   const createVenue = async () => {
     if (!authHeaders || !newVenueName.trim() || isCreatingVenue) {
@@ -743,7 +875,7 @@ function App() {
       const response = await axios.post<Venue>(
         `${API_BASE_URL}/api/admin/venues`,
         { name: venueName, classroom: venueName },
-        { headers: authHeaders }
+        { headers: authHeaders, params: selectedMemberCampaignId ? { campaign_id: selectedMemberCampaignId } : undefined }
       );
       setNewVenueName('');
       const newVenue = response.data;
@@ -829,13 +961,13 @@ function App() {
         await axios.put(
           `${API_BASE_URL}/api/admin/venues/${encodeURIComponent(setupVenueId)}`,
           { name: nameToSave, classroom: nameToSave },
-          { headers: authHeaders }
+          { headers: authHeaders, params: selectedMemberCampaignId ? { campaign_id: selectedMemberCampaignId } : undefined }
         );
       }
       await axios.patch(
         `${API_BASE_URL}/api/admin/venues/${encodeURIComponent(setupVenueId)}/projects`,
         { project_names: projectNames },
-        { headers: authHeaders }
+        { headers: authHeaders, params: selectedMemberCampaignId ? { campaign_id: selectedMemberCampaignId } : undefined }
       );
 
       const memberIdentifiers = [...setupSelectedMemberIds];
@@ -904,7 +1036,10 @@ function App() {
     }
     try {
       setDeletingVenueId(venueId);
-      await axios.delete(`${API_BASE_URL}/api/admin/venues/${venueId}`, { headers: authHeaders });
+      await axios.delete(`${API_BASE_URL}/api/admin/venues/${venueId}`, {
+        headers: authHeaders,
+        params: selectedMemberCampaignId ? { campaign_id: selectedMemberCampaignId } : undefined,
+      });
       setMessage('會場已刪除');
       setPendingVenueDelete(null);
       await Promise.all([loadVenues(), loadMembers()]);
@@ -935,7 +1070,7 @@ function App() {
       if (activeId) {
         setSelectedMemberCampaignId(activeId);
       }
-      await Promise.all([loadMembers(activeId), loadVenues()]);
+      await Promise.all([loadMembers(activeId), loadVenues(activeId)]);
     } catch (err: unknown) {
       setError('啟動場次失敗：' + parseAxiosError(err));
     } finally {
@@ -943,13 +1078,20 @@ function App() {
     }
   };
 
-  const closeCampaign = async () => {
-    if (!authHeaders || isClosingCampaign) {
+  const closeCampaign = async (targetCampaignId: string) => {
+    if (!authHeaders || closingCampaignId) {
       return;
     }
     try {
-      setIsClosingCampaign(true);
-      await axios.post(`${API_BASE_URL}/api/admin/system/close`, {}, { headers: authHeaders });
+      setClosingCampaignId(targetCampaignId);
+      await axios.post(
+        `${API_BASE_URL}/api/admin/system/close`,
+        {},
+        {
+          headers: authHeaders,
+          params: { campaign_id: targetCampaignId },
+        }
+      );
       setMessage('本回專題模擬投資系統已關閉並封存');
       const latestState = await loadSystemState();
       const fallbackCampaignId = selectedMemberCampaignId
@@ -960,11 +1102,11 @@ function App() {
       if (fallbackCampaignId) {
         setSelectedMemberCampaignId(fallbackCampaignId);
       }
-      await Promise.all([loadMembers(fallbackCampaignId), loadVenues()]);
+      await Promise.all([loadMembers(fallbackCampaignId), loadVenues(fallbackCampaignId)]);
     } catch (err: unknown) {
       setError('關閉場次失敗：' + parseAxiosError(err));
     } finally {
-      setIsClosingCampaign(false);
+      setClosingCampaignId(null);
     }
   };
 
@@ -1146,6 +1288,86 @@ function App() {
     }
   };
 
+  const assignMemberToCampaign = async (member: AdminMember, targetCampaignId: string) => {
+    if (!authHeaders || !isSuperAdmin(authUser?.role) || assigningMemberId === member.identifier) {
+      return;
+    }
+    const currentCampaignForMember = member.role === 'admin'
+      ? (member.managed_campaign_id || '')
+      : (member.campaign_id || '');
+    if (currentCampaignForMember === targetCampaignId) {
+      return;
+    }
+
+    try {
+      setAssigningMemberId(member.identifier);
+      await axios.post(
+        `${API_BASE_URL}/api/admin/members/${encodeURIComponent(member.identifier)}/assign-campaign`,
+        { target_campaign_id: targetCampaignId },
+        { headers: authHeaders }
+      );
+      setMessage(`已將 ${member.display_name} 分配到指定場次`);
+      await Promise.all([
+        loadMembers(selectedMemberCampaignIdRef.current || targetCampaignId),
+        loadVenues(selectedMemberCampaignIdRef.current || targetCampaignId),
+        loadSystemState(),
+      ]);
+    } catch (err: unknown) {
+      setError('分配場次失敗：' + parseAxiosError(err));
+    } finally {
+      setAssigningMemberId(null);
+    }
+  };
+
+  const assignJudgeToVenue = async (judge: AdminMember, venueId: string) => {
+    if (!authHeaders || assigningMemberId === judge.identifier || judge.assigned_venue_id === venueId) {
+      return;
+    }
+    try {
+      setAssigningMemberId(judge.identifier);
+      await axios.post(
+        `${API_BASE_URL}/api/admin/venues/${encodeURIComponent(venueId)}/assign-judge`,
+        { identifier: judge.identifier },
+        {
+          headers: authHeaders,
+          params: selectedMemberCampaignIdRef.current ? { campaign_id: selectedMemberCampaignIdRef.current } : undefined,
+        }
+      );
+      setMessage(`已將 ${judge.display_name} 指派到會場`);
+      await Promise.all([loadMembers(activeCampaignIdRef.current || selectedMemberCampaignIdRef.current), loadVenues(activeCampaignIdRef.current || selectedMemberCampaignIdRef.current)]);
+    } catch (err: unknown) {
+      setError('指派評審到會場失敗：' + parseAxiosError(err));
+    } finally {
+      setAssigningMemberId(null);
+    }
+  };
+
+  const unassignJudgeFromVenue = async (judge: AdminMember) => {
+    if (!authHeaders || assigningMemberId === judge.identifier || !judge.assigned_venue_id) {
+      return;
+    }
+    try {
+      setAssigningMemberId(judge.identifier);
+      await axios.patch(
+        `${API_BASE_URL}/api/admin/members/${encodeURIComponent(judge.identifier)}/status`,
+        { assigned_venue_id: '' },
+        {
+          headers: authHeaders,
+          params: {
+            campaign_id: judge.campaign_id || selectedMemberCampaignIdRef.current,
+            year: judge.campaign_year,
+          },
+        }
+      );
+      setMessage(`已將 ${judge.display_name} 移回未分配區`);
+      await Promise.all([loadMembers(activeCampaignIdRef.current || selectedMemberCampaignIdRef.current), loadVenues(activeCampaignIdRef.current || selectedMemberCampaignIdRef.current)]);
+    } catch (err: unknown) {
+      setError('移除評審會場失敗：' + parseAxiosError(err));
+    } finally {
+      setAssigningMemberId(null);
+    }
+  };
+
   const deleteMember = async (identifier: string) => {
     if (!authHeaders || deletingMemberId === identifier) {
       return;
@@ -1232,7 +1454,16 @@ function App() {
     <div className="container" style={{ maxWidth: 720, marginTop: 36 }}>
       <section className="section">
         <h2>登入</h2>
-        <p>請先輸入評審姓名，系統將以姓名建立本次登入身份。</p>
+        <p>
+          {inviteCampaign
+            ? `你正在進入 ${inviteCampaign.year} 年 ${inviteCampaign.label} 專題會，請輸入姓名登入。`
+            : '請先輸入評審姓名，系統將以姓名建立本次登入身份。'}
+        </p>
+        {inviteCampaign && (
+          <div className="invite-banner">
+            <strong>專題會：</strong> {inviteCampaign.year} / {inviteCampaign.label}
+          </div>
+        )}
       </section>
 
       <section className="section judge-form">
@@ -1331,353 +1562,188 @@ function App() {
 
   const renderAdmin = () => (
     <div className="container admin-shell">
+      {isLoadingAdminData && (
+        <section className="section admin-loading-section">
+          <span className="admin-loading-spinner" aria-hidden="true"></span>
+          <h3>資料載入中...</h3>
+          <p>正在同步場次、成員與會場，請稍候。</p>
+        </section>
+      )}
+
       <section className="section admin-hero">
         <div className="admin-hero-copy">
           <span className="admin-kicker">ADMIN CONSOLE</span>
-          <h2>{isCampaignActive ? '場次進行中' : '尚未啟動專題會'}</h2>
+          <h2>{displayedActiveCampaigns.length > 0 ? '進行中的專題會' : '尚未啟動專題會'}</h2>
           <p>
-            {isCampaignActive
-              ? `目前正在管理 ${activeCampaign?.year} 年 ${activeCampaign?.label}，可處理會場與評審狀態。`
-              : '先完成年度設定與成員整理，再正式啟動本次專題模擬投資評分。未啟動前不顯示會場管理。'}
+            {displayedActiveCampaigns.length > 0
+              ? `目前共有 ${displayedActiveCampaigns.length} 個啟動中的專題會。可直接在下方查看邀請網址、管理會議廳與拖拉分配評審。`
+              : '先完成年度設定與成員整理，再正式啟動本次專題模擬投資評分。'}
           </p>
-        </div>
-
-        <div className="admin-launch-panel">
-          <div className="admin-status-badge">
-            {isCampaignActive ? `進行中 ${activeCampaign?.year}` : '等待啟動'}
+          <div className="admin-hero-metrics">
+            <div className="admin-hero-metric">
+              <span>進行中場次</span>
+              <strong>{displayedActiveCampaigns.length}</strong>
+            </div>
+            <div className="admin-hero-metric">
+              <span>目前會議廳</span>
+              <strong>{venues.length}</strong>
+            </div>
+            <div className="admin-hero-metric">
+              <span>目前評審</span>
+              <strong>{judgeMembers.length}</strong>
+            </div>
           </div>
-          <h3>{isCampaignActive ? activeCampaign?.label : '建立新場次'}</h3>
-          <div className="admin-launch-grid">
-            <input
-              className="investment-input"
-              value={campaignLabelInput}
-              onChange={(e) => setCampaignLabelInput(e.target.value)}
-              placeholder="場次名稱，例如 資管系畢業專題"
-              disabled={isCampaignActive}
-            />
-          </div>
-          <div className="admin-launch-actions">
-            {!isCampaignActive && (
-              <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign}>
-                {isStartingCampaign ? '啟動中...' : '啟動本年度場次'}
-              </button>
-            )}
-            {isCampaignActive && (
-              <button onClick={closeCampaign} disabled={isClosingCampaign}>
-                {isClosingCampaign ? '封存中...' : '關閉並封存本回'}
-              </button>
-            )}
-          </div>
-          <p className="admin-note">啟動時會使用當前西元年份並重置該年度評審狀態；關閉後會保留年度封存紀錄。</p>
         </div>
       </section>
 
-      <section className="section admin-history-section">
+      <section className="section admin-campaign-section">
         <div className="admin-section-heading">
           <div>
-            <h3>歷年封存紀錄</h3>
-            <p>每年度的投資總額與場次狀態會保留在這裡。</p>
+            <h3>專題會管理</h3>
+            <p>每位管理員可同時管理自己的專題會。啟動後會自動產生邀請網址。</p>
           </div>
         </div>
-        <div className="admin-history-grid">
-          {Object.values(adminSystemState.campaigns_by_year).every(
-            (campaigns) => !campaigns.some((campaign) => campaign.status === 'closed')
-          ) && (
+        <div className="admin-campaign-create-row">
+          <input
+            className="investment-input"
+            value={campaignLabelInput}
+            onChange={(e) => setCampaignLabelInput(e.target.value)}
+            placeholder="場次名稱，例如 資管系畢業專題"
+            disabled={!canStartAnotherCampaign}
+          />
+          <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign || !canStartAnotherCampaign}>
+            {isStartingCampaign ? '啟動中...' : '啟動新場次'}
+          </button>
+        </div>
+        <div className="admin-campaign-grid">
+          {displayedActiveCampaigns.length === 0 && (
             <div className="investment-item admin-history-empty">
-              <p>尚無場次紀錄</p>
+              <p>目前沒有進行中的專題會。</p>
             </div>
           )}
-          {Object.entries(adminSystemState.campaigns_by_year)
-            .sort((a, b) => Number(b[0]) - Number(a[0]))
-            .filter(([, campaigns]) => campaigns.some((campaign) => campaign.status === 'closed'))
-            .map(([year, campaigns]) => (
-              <div key={year} className="investment-item admin-history-card">
-                <p className="admin-history-year">{year}</p>
-                {campaigns
-                  .filter((campaign) => campaign.status === 'closed')
-                  .map((campaign) => (
-                  <div key={campaign.id} className="admin-history-row">
-                    <strong>{campaign.label}</strong>
-                    <span>已封存</span>
-                    <span>
-                      {campaign.summary?.overall_total_investment !== undefined
-                        ? `總投資 ${campaign.summary.overall_total_investment.toLocaleString()} 元`
-                        : '尚無統計'}
-                    </span>
-                    <div className="admin-history-actions">
-                      <button onClick={() => setSelectedHistoryCampaign(campaign)}>
-                        查看戰況
-                      </button>
-                      <button onClick={() => setPendingArchiveDelete(campaign)} disabled={isDeletingArchive}>
-                        {isDeletingArchive && pendingArchiveDelete?.id === campaign.id ? '刪除中...' : '刪除封存紀錄'}
-                      </button>
-                    </div>
+          {displayedActiveCampaigns.map((campaign) => {
+            const inviteUrl = campaign.invite_token
+              ? `${window.location.origin}${window.location.pathname}?c=${encodeURIComponent(campaign.invite_token)}`
+              : '';
+            return (
+              <div key={campaign.id} className="campaign-card">
+                <div className="campaign-card-header">
+                  <div>
+                    <div className="admin-status-badge">進行中 {campaign.year}</div>
+                    <h4>{campaign.label}</h4>
                   </div>
-                ))}
-              </div>
-            ))}
-        </div>
-      </section>
-
-      <section className="section admin-history-section">
-        <div className="admin-section-heading">
-          <div>
-            <h3>最近刪除（30 天可還原）</h3>
-            <p>避免誤刪除，封存紀錄會先進入最近刪除，超過 30 天才會自動清除。</p>
-          </div>
-        </div>
-        <div className="admin-history-grid">
-          {Object.keys(adminSystemState.recently_deleted_by_year).length === 0 && (
-            <div className="investment-item admin-history-empty">
-              <p>目前沒有最近刪除的封存紀錄。</p>
-            </div>
-          )}
-          {Object.entries(adminSystemState.recently_deleted_by_year)
-            .sort((a, b) => Number(b[0]) - Number(a[0]))
-            .map(([year, campaigns]) => (
-              <div key={`deleted-${year}`} className="investment-item admin-history-card">
-                <p className="admin-history-year">{year}</p>
-                {campaigns.map((campaign) => (
-                  <div key={`${campaign.id}-${campaign.deleted_at}`} className="admin-history-row admin-history-row-deleted">
-                    <strong>{campaign.label}</strong>
-                    <span>刪除時間：{new Date(campaign.deleted_at).toLocaleString('zh-Hant-TW')}</span>
-                    <span>剩餘可還原天數：{campaign.days_remaining} 天</span>
-                    <div className="admin-history-actions">
-                      <button onClick={() => restoreArchivedCampaign(campaign)} disabled={restoringCampaignId === campaign.id || permanentDeletingCampaignId === campaign.id}>
-                        {restoringCampaignId === campaign.id ? '還原中...' : '還原紀錄'}
-                      </button>
-                      <button
-                        onClick={() => setPendingPermanentDelete(campaign)}
-                        disabled={permanentDeletingCampaignId === campaign.id || restoringCampaignId === campaign.id}
-                        style={{ marginLeft: 8, background: '#dc2626', color: '#fff', border: 'none' }}
-                      >
-                        {permanentDeletingCampaignId === campaign.id ? '刪除中...' : '立即刪除'}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
-        </div>
-      </section>
-
-      {isCampaignActive && (
-        <div className="section admin-tab-strip">
-          <div className="nav-buttons admin-tabs">
-            <button
-              className={adminTab === 'venues' ? 'active' : ''}
-              onClick={() => setAdminTab('venues')}
-            >
-              會場管理
-            </button>
-            <button
-              className={adminTab === 'members' ? 'active' : ''}
-              onClick={() => setAdminTab('members')}
-            >
-              成員管理
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(!isCampaignActive || adminTab === 'members') && <section className="section judge-form">
-        <div className="admin-section-heading admin-member-toolbar">
-          <div>
-            <h3>{isSuperAdmin(authUser?.role) && !isCampaignActive ? '全域成員管理' : '成員管理'}</h3>
-            <p>{isSuperAdmin(authUser?.role) && !isCampaignActive
-              ? '可管理所有既有成員，並將評審調整為系所管理者。點擊姓名檢視詳細資料。'
-              : '依會場分組顯示成員。點擊姓名查看詳細資料。'}</p>
-          </div>
-          {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && <div className="admin-year-picker">
-            <label htmlFor="member-campaign">管理場次</label>
-            <div className="input-group">
-              <select
-                id="member-campaign"
-                className="investment-input"
-                value={selectedMemberCampaignId}
-                onChange={(e) => setSelectedMemberCampaignId(e.target.value)}
-              >
-                {campaignOptions.length === 0 && <option value="">尚無場次</option>}
-                {campaignOptions.map((campaign) => (
-                  <option key={campaign.id} value={campaign.id}>
-                    {campaign.year} / {campaign.label} ({campaign.status === 'active' ? '進行中' : '已封存'})
-                  </option>
-                ))}
-              </select>
-              <button onClick={() => loadMembers(selectedMemberCampaignId)} disabled={isLoadingMembers || !selectedMemberCampaignId}>
-                {isLoadingMembers ? '讀取中...' : '讀取場次'}
-              </button>
-            </div>
-          </div>}
-          {isSuperAdmin(authUser?.role) && !isCampaignActive && (
-            <button
-              className="submit-button"
-              style={{ alignSelf: 'flex-end', minWidth: 120 }}
-              onClick={() => loadMembers('')}
-              disabled={isLoadingMembers}
-            >
-              {isLoadingMembers ? '讀取中...' : '整理管理者'}
-            </button>
-          )}
-        </div>
-
-        {managedMembers.length === 0 && (
-          <div className="investment-item">
-            <p>
-              {isSuperAdmin(authUser?.role) && !isCampaignActive
-                ? '尚無可管理成員資料，可在下方新增。'
-                : `${selectedMemberCampaign ? `${selectedMemberCampaign.year} / ${selectedMemberCampaign.label}` : '目前所選場次'} 尚無成員資料。`}
-            </p>
-          </div>
-        )}
-
-        {/* super_admin without campaign: manager-centric grouped list */}
-        {managedMembers.length > 0 && isSuperAdmin(authUser?.role) && !isCampaignActive && (
-          <>
-            {globalMembersByCampaign.map((campaignGroup) => (
-              <div key={campaignGroup.key} className="member-section">
-                <div className="member-section-title">專題會：{campaignGroup.label}</div>
-                <div className="member-role-subtitle member-role-subtitle-admin" style={{ marginBottom: 8 }}>
-                  系所管理者（{campaignGroup.admins.length}）與評審（{campaignGroup.judges.length}）
+                  <button onClick={() => closeCampaign(campaign.id)} disabled={Boolean(closingCampaignId)}>
+                    {closingCampaignId === campaign.id ? '封存中...' : '關閉並封存'}
+                  </button>
                 </div>
-                <div className="manager-board">
-                  {campaignGroup.admins.map((manager) => {
-                    const judges = campaignGroup.judgesByManager[manager.identifier] || [];
-                    return (
-                      <div
-                        key={manager.identifier}
-                        className="manager-column"
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => {
-                          if (!draggingJudgeId) return;
-                          const judge = campaignGroup.judges.find((m) => m.identifier === draggingJudgeId);
-                          if (!judge) return;
-                          if (judge.manager_identifier === manager.identifier) { setDraggingJudgeId(null); return; }
-                          setDraggingJudgeId(null);
-                          if (suppressMoveConfirm) {
-                            executeMoveJudge(judge, manager.identifier);
-                          } else {
-                            setMoveConfirmSuppressChecked(false);
-                            setPendingMoveJudge({ judge, managerIdentifier: manager.identifier, managerName: manager.display_name });
+                <p className="admin-note">啟動時間：{new Date(campaign.started_at).toLocaleString('zh-Hant-TW')}</p>
+                {inviteUrl && (
+                  <div className="admin-invite-box">
+                    <label>專題會邀請網址</label>
+                    <div className="admin-invite-row">
+                      <input className="investment-input" value={inviteUrl} readOnly />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(inviteUrl);
+                            setMessage('已複製專題會邀請網址');
+                          } catch {
+                            setError('複製失敗，請手動複製網址');
                           }
                         }}
                       >
-                        <div
-                          className="member-card member-card-admin manager-card"
-                          onClick={() => { setSelectedMemberId(manager.identifier); setIsEditingMember(false); }}
-                          role="button"
-                          tabIndex={0}
-                        >
-                          <div className="member-role-chip">管理者</div>
-                          <div className="member-name">{manager.display_name}</div>
-                        </div>
-                        <div className="manager-judge-list">
-                          {judges.length === 0 && <p className="manager-empty">尚未綁定評審</p>}
-                          {judges.map((judge) => (
-                            <div
-                              key={judge.identifier}
-                              className="member-card member-card-judge manager-judge-card"
-                              draggable={assigningMemberId !== judge.identifier}
-                              onDragStart={() => setDraggingJudgeId(judge.identifier)}
-                              onDragEnd={() => setDraggingJudgeId(null)}
-                              onClick={() => { setSelectedMemberId(judge.identifier); setIsEditingMember(false); }}
-                              role="button"
-                              tabIndex={0}
-                            >
-                              <div className="member-role-chip">評審</div>
-                              <div className="member-name">{judge.display_name}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  <div
-                    className="manager-column manager-column-unassigned"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (!draggingJudgeId) return;
-                      const judge = campaignGroup.judges.find((m) => m.identifier === draggingJudgeId);
-                      if (!judge) return;
-                      if (!judge.manager_identifier) { setDraggingJudgeId(null); return; }
-                      const currentManagerName = managerNameByIdentifier[judge.manager_identifier] || '管理者';
-                      setDraggingJudgeId(null);
-                      if (suppressMoveConfirm) {
-                        executeMoveJudge(judge, null);
-                      } else {
-                        setMoveConfirmSuppressChecked(false);
-                        setPendingMoveJudge({ judge, managerIdentifier: null, managerName: currentManagerName });
-                      }
-                    }}
-                  >
-                    <div className="member-section-title" style={{ marginBottom: 6 }}>未指派管理者</div>
-                    <div className="manager-judge-list">
-                      {(campaignGroup.judgesByManager.__unassigned__ || []).map((judge) => (
-                        <div
-                          key={judge.identifier}
-                          className="member-card member-card-judge manager-judge-card"
-                          draggable={assigningMemberId !== judge.identifier}
-                          onDragStart={() => setDraggingJudgeId(judge.identifier)}
-                          onDragEnd={() => setDraggingJudgeId(null)}
-                          onClick={() => { setSelectedMemberId(judge.identifier); setIsEditingMember(false); }}
-                          role="button"
-                          tabIndex={0}
-                        >
-                          <div className="member-role-chip">評審</div>
-                          <div className="member-name">{judge.display_name}</div>
-                        </div>
-                      ))}
-                      {!(campaignGroup.judgesByManager.__unassigned__ || []).length && (
-                        <p className="manager-empty">目前沒有未指派評審</p>
-                      )}
+                        複製
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-invite-qr-btn"
+                        onClick={() => setQrInviteCampaign(campaign)}
+                      >
+                        QR
+                      </button>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
-            ))}
-          </>
-        )}
+            );
+          })}
+        </div>
+      </section>
 
-        {judgeMembers.length > 0 && !(isSuperAdmin(authUser?.role) && !isCampaignActive) && (() => {
-          // 分組成員
-          const groupedMembers = (() => {
-            const groups: Record<string, AdminMember[]> = {};
-            judgeMembers.forEach((member) => {
-              const key = member.assigned_venue_id || '__unassigned__';
-              if (!groups[key]) groups[key] = [];
-              groups[key].push(member);
-            });
-            return groups;
-          })();
+      <div className="section admin-tab-strip">
+        <div className="nav-buttons admin-tabs">
+          <button
+            className={adminTab === 'campaigns' ? 'active' : ''}
+            onClick={() => setAdminTab('campaigns')}
+          >
+            場次管理
+          </button>
+          <button
+            className={adminTab === 'venues' ? 'active' : ''}
+            onClick={() => setAdminTab('venues')}
+            disabled={!isCampaignActive}
+            title={isCampaignActive ? '管理會場與拖拉分派' : '請先啟動場次'}
+          >
+            會場管理
+          </button>
+          <button
+            className={adminTab === 'members' ? 'active' : ''}
+            onClick={() => setAdminTab('members')}
+          >
+            成員管理
+          </button>
+          <button
+            className={adminTab === 'archives' ? 'active' : ''}
+            onClick={() => setAdminTab('archives')}
+          >
+            封存紀錄
+          </button>
+        </div>
+      </div>
 
-          // 取得會場名稱
-          const venueNames: Record<string, string> = {};
-          venues.forEach((v) => {
-            venueNames[v.id] = v.name || v.classroom || v.id;
-          });
+      {adminTab === 'campaigns' && <section className="section judge-form">
+        <div className="admin-section-heading admin-member-toolbar">
+          <div>
+            <h3>場次管理</h3>
+            <p>在此以拖拉方式將成員分配到不同場次。此頁不使用下拉選單切換場次。</p>
+          </div>
+        </div>
 
-          // 排序：有會場的在前，尚未加入的在後
-          const sortedKeys = Object.keys(groupedMembers).sort((a, b) => {
-            if (a === '__unassigned__') return 1;
-            if (b === '__unassigned__') return -1;
-            return (venueNames[a] || a).localeCompare((venueNames[b] || b), 'zh-Hant', { numeric: true });
-          });
-
-          return (
-            <>
-              {sortedKeys.map((venueId) => (
-                <div key={venueId} className="member-section">
-                  <div className="member-section-title">
-                    {venueId === '__unassigned__' ? '尚未加入會場' : `${venueNames[venueId] || venueId} 會場`}
-                  </div>
-                  <div className="member-cards">
-                    {(groupedMembers[venueId] || [])
-                      .sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'))
-                      .map((member) => (
+        {isSuperAdmin(authUser?.role) && (
+          <div className="form-group">
+            <label>場次成員分配（拖拉卡片到目標場次）</label>
+            <div className="campaign-assignment-board">
+              {(displayedActiveCampaigns || []).map((campaign) => {
+                const campaignManagers = members.filter((member) => member.role === 'admin' && member.managed_campaign_id === campaign.id);
+                const campaignJudges = members.filter((member) => member.role === 'judge' && member.campaign_id === campaign.id);
+                const merged = [...campaignManagers, ...campaignJudges].sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'));
+                const stats = campaignMemberStats[campaign.id] || { managers: 0, judges: 0 };
+                return (
+                  <div
+                    key={`campaign-assignment-${campaign.id}`}
+                    className="campaign-assignment-col"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (!draggingCampaignMemberId) return;
+                      const member = members.find((row) => row.identifier === draggingCampaignMemberId);
+                      setDraggingCampaignMemberId(null);
+                      if (!member) return;
+                      assignMemberToCampaign(member, campaign.id);
+                    }}
+                  >
+                    <div className="campaign-assignment-header">
+                      <strong>{campaign.year} / {campaign.label}</strong>
+                      <span>{stats.managers} 管理者 / {stats.judges} 評審</span>
+                    </div>
+                    <div className="campaign-assignment-body">
+                      {merged.map((member) => (
                         <div
-                          key={member.identifier}
-                          className="member-card"
+                          key={`campaign-member-${campaign.id}-${member.identifier}`}
+                          className={`venue-judge-card ${member.role === 'admin' ? 'campaign-role-admin' : 'campaign-role-judge'} ${assigningMemberId === member.identifier ? 'loading' : ''}`}
+                          draggable={assigningMemberId !== member.identifier}
+                          onDragStart={() => setDraggingCampaignMemberId(member.identifier)}
+                          onDragEnd={() => setDraggingCampaignMemberId(null)}
                           onClick={() => {
                             setSelectedMemberId(member.identifier);
                             setIsEditingMember(false);
@@ -1686,14 +1752,125 @@ function App() {
                           tabIndex={0}
                         >
                           <div className="member-name">{member.display_name}</div>
+                          <div className="venue-judge-meta">{member.role === 'admin' ? '系所管理者' : '評審'}</div>
                         </div>
                       ))}
+                      {merged.length === 0 && <p className="manager-empty">拖拉成員到此場次</p>}
+                    </div>
                   </div>
+                );
+              })}
+
+              <div
+                className="campaign-assignment-col campaign-assignment-col-unassigned"
+                onDragOver={(e) => e.preventDefault()}
+              >
+                <div className="campaign-assignment-header">
+                  <strong>未分配場次</strong>
+                  <span>
+                    {
+                      members.filter((member) => (member.role === 'admin'
+                        ? !member.managed_campaign_id
+                        : !member.campaign_id)).length
+                    } 位成員
+                  </span>
                 </div>
-              ))}
-            </>
-          );
-        })()}
+                <div className="campaign-assignment-body">
+                  {members
+                    .filter((member) => (member.role === 'admin' ? !member.managed_campaign_id : !member.campaign_id))
+                    .sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'))
+                    .map((member) => (
+                      <div
+                        key={`campaign-member-unassigned-${member.identifier}`}
+                        className={`venue-judge-card ${member.role === 'admin' ? 'campaign-role-admin' : 'campaign-role-judge'} ${assigningMemberId === member.identifier ? 'loading' : ''}`}
+                        draggable={assigningMemberId !== member.identifier}
+                        onDragStart={() => setDraggingCampaignMemberId(member.identifier)}
+                        onDragEnd={() => setDraggingCampaignMemberId(null)}
+                        onClick={() => {
+                          setSelectedMemberId(member.identifier);
+                          setIsEditingMember(false);
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <div className="member-name">{member.display_name}</div>
+                        <div className="venue-judge-meta">{member.role === 'admin' ? '系所管理者' : '評審'}</div>
+                      </div>
+                    ))}
+                  {!members.some((member) => (member.role === 'admin' ? !member.managed_campaign_id : !member.campaign_id)) && (
+                    <p className="manager-empty">目前沒有未分配場次的成員</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isSuperAdmin(authUser?.role) && (
+          <div className="investment-item">
+            <p>目前僅最高管理者可進行跨場次成員拖拉分配。</p>
+          </div>
+        )}
+      </section>}
+
+      {adminTab === 'members' && <section className="section judge-form">
+        <div className="admin-section-heading admin-member-toolbar">
+          <div>
+            <h3>成員管理</h3>
+            <p>顯示所有可管理成員，可依標籤排序後快速檢視與操作。</p>
+          </div>
+          <div className="admin-year-picker">
+            <label htmlFor="member-sort-tag">標籤排序</label>
+            <select
+              id="member-sort-tag"
+              className="investment-input"
+              value={memberSortTag}
+              onChange={(e) => setMemberSortTag(e.target.value as MemberSortTag)}
+            >
+              <option value="role">角色標籤</option>
+              <option value="campaign">場次標籤</option>
+              <option value="venue">會場標籤</option>
+              <option value="lock">鎖定狀態標籤</option>
+            </select>
+          </div>
+        </div>
+
+        {sortedMembersByTag.length === 0 ? (
+          <div className="investment-item">
+            <p>目前沒有可顯示的成員資料。</p>
+          </div>
+        ) : (
+          <div className="member-list-table">
+            {sortedMembersByTag.map((member) => {
+              const campaignId = member.role === 'admin' ? member.managed_campaign_id : member.campaign_id;
+              const campaignInfo = campaignOptions.find((campaign) => campaign.id === campaignId);
+              const campaignTag = campaignInfo
+                ? `${campaignInfo.year} / ${campaignInfo.label}`
+                : (campaignId || '未分配場次');
+              const venueTag = member.assigned_venue_id || '未分配會場';
+              const lockTag = member.is_voted ? '已鎖定' : '可編輯';
+              return (
+                <button
+                  key={`member-row-${member.identifier}`}
+                  type="button"
+                  className="member-list-row"
+                  onClick={() => {
+                    setSelectedMemberId(member.identifier);
+                    setIsEditingMember(false);
+                  }}
+                >
+                  <span className="member-list-name">{member.display_name}</span>
+                  <span className="member-list-tags">
+                    <span className="member-tag role">{member.role === 'admin' ? '系所管理者' : '評審'}</span>
+                    <span className="member-tag campaign">{campaignTag}</span>
+                    <span className="member-tag venue">{venueTag}</span>
+                    <span className={`member-tag lock ${member.is_voted ? 'locked' : 'editable'}`}>{lockTag}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <div className="form-group" style={{ marginTop: 16 }}>
           <label>
@@ -1725,16 +1902,104 @@ function App() {
               {isCreatingMember ? '新增中...' : '新增'}
             </button>
           </div>
-          {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && !isCampaignActive && (
-            <p className="admin-modal-note" style={{ marginTop: 8 }}>
-              尚未啟動場次時，無法新增評審；最高管理者可先新增系所管理者。
-            </p>
-          )}
         </div>
       </section>}
 
+      {adminTab === 'archives' && (
+        <>
+          <section className="section admin-history-section">
+            <div className="admin-section-heading">
+              <div>
+                <h3>歷年封存紀錄</h3>
+                <p>每年度的投資總額與場次狀態會保留在這裡。</p>
+              </div>
+            </div>
+            <div className="admin-history-grid">
+              {Object.values(adminSystemState.campaigns_by_year).every(
+                (campaigns) => !campaigns.some((campaign) => campaign.status === 'closed')
+              ) && (
+                <div className="investment-item admin-history-empty">
+                  <p>尚無場次紀錄</p>
+                </div>
+              )}
+              {Object.entries(adminSystemState.campaigns_by_year)
+                .sort((a, b) => Number(b[0]) - Number(a[0]))
+                .filter(([, campaigns]) => campaigns.some((campaign) => campaign.status === 'closed'))
+                .map(([year, campaigns]) => (
+                  <div key={year} className="investment-item admin-history-card">
+                    <p className="admin-history-year">{year}</p>
+                    {campaigns
+                      .filter((campaign) => campaign.status === 'closed')
+                      .map((campaign) => (
+                      <div key={campaign.id} className="admin-history-row">
+                        <strong>{campaign.label}</strong>
+                        <span>已封存</span>
+                        <span>
+                          {campaign.summary?.overall_total_investment !== undefined
+                            ? `總投資 ${campaign.summary.overall_total_investment.toLocaleString()} 元`
+                            : '尚無統計'}
+                        </span>
+                        <div className="admin-history-actions">
+                          <button onClick={() => setSelectedHistoryCampaign(campaign)}>
+                            查看戰況
+                          </button>
+                          <button onClick={() => setPendingArchiveDelete(campaign)} disabled={isDeletingArchive}>
+                            {isDeletingArchive && pendingArchiveDelete?.id === campaign.id ? '刪除中...' : '刪除封存紀錄'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </div>
+          </section>
+
+          <section className="section admin-history-section">
+            <div className="admin-section-heading">
+              <div>
+                <h3>最近刪除（30 天可還原）</h3>
+                <p>避免誤刪除，封存紀錄會先進入最近刪除，超過 30 天才會自動清除。</p>
+              </div>
+            </div>
+            <div className="admin-history-grid">
+              {Object.keys(adminSystemState.recently_deleted_by_year).length === 0 && (
+                <div className="investment-item admin-history-empty">
+                  <p>目前沒有最近刪除的封存紀錄。</p>
+                </div>
+              )}
+              {Object.entries(adminSystemState.recently_deleted_by_year)
+                .sort((a, b) => Number(b[0]) - Number(a[0]))
+                .map(([year, campaigns]) => (
+                  <div key={`deleted-${year}`} className="investment-item admin-history-card">
+                    <p className="admin-history-year">{year}</p>
+                    {campaigns.map((campaign) => (
+                      <div key={`${campaign.id}-${campaign.deleted_at}`} className="admin-history-row admin-history-row-deleted">
+                        <strong>{campaign.label}</strong>
+                        <span>刪除時間：{new Date(campaign.deleted_at).toLocaleString('zh-Hant-TW')}</span>
+                        <span>剩餘可還原天數：{campaign.days_remaining} 天</span>
+                        <div className="admin-history-actions">
+                          <button onClick={() => restoreArchivedCampaign(campaign)} disabled={restoringCampaignId === campaign.id || permanentDeletingCampaignId === campaign.id}>
+                            {restoringCampaignId === campaign.id ? '還原中...' : '還原紀錄'}
+                          </button>
+                          <button
+                            onClick={() => setPendingPermanentDelete(campaign)}
+                            disabled={permanentDeletingCampaignId === campaign.id || restoringCampaignId === campaign.id}
+                            style={{ marginLeft: 8, background: '#dc2626', color: '#fff', border: 'none' }}
+                          >
+                            {permanentDeletingCampaignId === campaign.id ? '刪除中...' : '立即刪除'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </div>
+          </section>
+        </>
+      )}
+
       {selectedMemberId && (() => {
-        const member = managedMembers.find((m) => m.identifier === selectedMemberId);
+        const member = members.find((m) => m.identifier === selectedMemberId);
         if (!member) return null;
 
         return (
@@ -1861,7 +2126,169 @@ function App() {
         <>
           {adminTab === 'venues' && <section className="section judge-form">
             <h3>會場管理（僅在場次啟動後開放）</h3>
-            <p style={{ marginBottom: 12 }}>啟動後才需要處理會場、教室與各會場評審鎖定狀態。</p>
+            <p style={{ marginBottom: 12 }}>啟動後才需要處理會場、教室與各會場評審鎖定狀態。可直接拖拉評審卡片到對應會議廳。</p>
+
+            <div className="form-group">
+              <label>選擇場次</label>
+              <div className="input-group">
+                <select
+                  className="investment-input"
+                  value={selectedMemberCampaignId}
+                  onChange={(e) => setSelectedMemberCampaignId(e.target.value)}
+                >
+                  {venueCampaignOptions.length === 0 && <option value="">尚無進行中場次</option>}
+                  {venueCampaignOptions.map((campaign) => (
+                    <option key={`venue-campaign-${campaign.id}`} value={campaign.id}>
+                      {campaign.year} / {campaign.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    if (!selectedMemberCampaignId) return;
+                    loadMembers(selectedMemberCampaignId);
+                    loadVenues(selectedMemberCampaignId);
+                  }}
+                  disabled={!selectedMemberCampaignId || isLoadingMembers}
+                >
+                  {isLoadingMembers ? '讀取中...' : '套用場次'}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>尚未分派會場的評審（可拖拉到下方會議廳）</label>
+              <div className="unassigned-drag-pool">
+                {(venueJudgeGroups.__unassigned__ || []).map((judge) => (
+                  <div
+                    key={`pool-${judge.identifier}`}
+                    className={`venue-judge-card ${assigningMemberId === judge.identifier ? 'loading' : ''}`}
+                    draggable={assigningMemberId !== judge.identifier}
+                    onDragStart={() => setDraggingJudgeId(judge.identifier)}
+                    onDragEnd={() => setDraggingJudgeId(null)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="member-name">{judge.display_name}</div>
+                    <div className="venue-judge-meta">
+                      {assigningMemberId === judge.identifier ? (
+                        <span className="venue-loading-inline">
+                          <span className="venue-loading-spinner" aria-hidden="true"></span>
+                          分派中，等待系統處理...
+                        </span>
+                      ) : '拖拉到任一會議廳以分派'}
+                    </div>
+                  </div>
+                ))}
+                {!(venueJudgeGroups.__unassigned__ || []).length && (
+                  <p className="manager-empty">目前沒有尚未分派會場的評審</p>
+                )}
+              </div>
+            </div>
+
+            <div className="venue-board">
+              {[...venues]
+                .sort((a, b) => (a.classroom || a.name).localeCompare((b.classroom || b.name), 'zh-Hant', { numeric: true, sensitivity: 'base' }))
+                .map((venue) => (
+                  <div
+                    key={`board-${venue.id}`}
+                    className="venue-col"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (!draggingJudgeId) return;
+                      const judge = judgeMembers.find((member) => member.identifier === draggingJudgeId);
+                      setDraggingJudgeId(null);
+                      if (!judge) return;
+                      assignJudgeToVenue(judge, venue.id);
+                    }}
+                  >
+                    <div className="venue-col-header">
+                      <strong>{venue.classroom || venue.name}</strong>
+                      <span>{(venueMemberStats[venue.id]?.managers || 0)} 管理者 / {(venueMemberStats[venue.id]?.judges || 0)} 評審</span>
+                    </div>
+                    <div className="venue-col-subtitle">{venue.projects.length} 個專題組</div>
+                    <div className="venue-col-body">
+                      {(venueJudgeGroups[venue.id] || []).map((judge) => (
+                        <div
+                          key={judge.identifier}
+                          className={`venue-judge-card ${assigningMemberId === judge.identifier ? 'loading' : ''}`}
+                          draggable={assigningMemberId !== judge.identifier}
+                          onDragStart={() => setDraggingJudgeId(judge.identifier)}
+                          onDragEnd={() => setDraggingJudgeId(null)}
+                          onClick={() => {
+                            setSelectedMemberId(judge.identifier);
+                            setIsEditingMember(false);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <div className="member-name">{judge.display_name}</div>
+                          <div className="venue-judge-meta">
+                            {assigningMemberId === judge.identifier ? (
+                              <span className="venue-loading-inline">
+                                <span className="venue-loading-spinner" aria-hidden="true"></span>
+                                移動中，等待系統處理...
+                              </span>
+                            ) : (judge.is_voted ? '已鎖定' : '可移動')}
+                          </div>
+                        </div>
+                      ))}
+                      {!(venueJudgeGroups[venue.id] || []).length && (
+                        <p className="manager-empty">拖拉評審到這裡</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+              <div
+                className="venue-col venue-unassigned-col"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  if (!draggingJudgeId) return;
+                  const judge = judgeMembers.find((member) => member.identifier === draggingJudgeId);
+                  setDraggingJudgeId(null);
+                  if (!judge) return;
+                  unassignJudgeFromVenue(judge);
+                }}
+              >
+                <div className="venue-col-header">
+                  <strong>未分配評審</strong>
+                  <span>0 管理者 / {(venueJudgeGroups.__unassigned__ || []).length} 評審</span>
+                </div>
+                <div className="venue-col-subtitle">拖到這裡可取消會議廳指派</div>
+                <div className="venue-col-body">
+                  {(venueJudgeGroups.__unassigned__ || []).map((judge) => (
+                    <div
+                      key={judge.identifier}
+                      className={`venue-judge-card ${assigningMemberId === judge.identifier ? 'loading' : ''}`}
+                      draggable={assigningMemberId !== judge.identifier}
+                      onDragStart={() => setDraggingJudgeId(judge.identifier)}
+                      onDragEnd={() => setDraggingJudgeId(null)}
+                      onClick={() => {
+                        setSelectedMemberId(judge.identifier);
+                        setIsEditingMember(false);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <div className="member-name">{judge.display_name}</div>
+                      <div className="venue-judge-meta">
+                        {assigningMemberId === judge.identifier ? (
+                          <span className="venue-loading-inline">
+                            <span className="venue-loading-spinner" aria-hidden="true"></span>
+                            更新中，等待系統處理...
+                          </span>
+                        ) : '尚未分配'}
+                      </div>
+                    </div>
+                  ))}
+                  {!(venueJudgeGroups.__unassigned__ || []).length && (
+                    <p className="manager-empty">目前沒有未分配評審</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="form-group">
               <label>新增會場</label>
               <div className="input-group">
@@ -2228,6 +2655,33 @@ function App() {
         </div>
       )}
 
+      {qrInviteCampaign && (() => {
+        const qrInviteUrl = qrInviteCampaign.invite_token
+          ? `${window.location.origin}${window.location.pathname}?c=${encodeURIComponent(qrInviteCampaign.invite_token)}`
+          : '';
+        if (!qrInviteUrl) {
+          return null;
+        }
+        return (
+          <div className="admin-modal-backdrop" role="dialog" aria-modal="true" onClick={() => setQrInviteCampaign(null)}>
+            <div className="admin-modal admin-qr-modal" onClick={(e) => e.stopPropagation()}>
+              <h3>邀請 QRCode</h3>
+              <p className="admin-modal-note">
+                場次：{qrInviteCampaign.year} / {qrInviteCampaign.label}
+              </p>
+              <div className="admin-qr-wrap">
+                <QRCodeCanvas value={qrInviteUrl} size={280} includeMargin level="M" />
+              </div>
+              <div className="admin-qr-url">{qrInviteUrl}</div>
+              <div className="admin-modal-actions">
+                <button onClick={() => setQrInviteCampaign(null)}>關閉</button>
+                <button className="submit-button" onClick={() => window.print()}>列印 QRCode</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {pendingMoveJudge && (
         <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
           <div className="admin-modal admin-confirm-modal">
@@ -2237,14 +2691,6 @@ function App() {
                 ? <>將「{pendingMoveJudge.judge.display_name}」移至「{pendingMoveJudge.managerName}」的群組？</>
                 : <>將「{pendingMoveJudge.judge.display_name}」從「{pendingMoveJudge.managerName}」群組移出？</>}
             </p>
-            <label className="move-confirm-suppress-row">
-              <input
-                type="checkbox"
-                checked={moveConfirmSuppressChecked}
-                onChange={(e) => setMoveConfirmSuppressChecked(e.target.checked)}
-              />
-              不要再顯示
-            </label>
             <div className="admin-modal-actions">
               <button onClick={() => setPendingMoveJudge(null)}>取消</button>
               <button
@@ -2253,10 +2699,6 @@ function App() {
                   ? { background: 'linear-gradient(135deg, #22c55e, #16a34a)' }
                   : { background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
                 onClick={() => {
-                  if (moveConfirmSuppressChecked) {
-                    localStorage.setItem('suppress_move_confirm', 'true');
-                    setSuppressMoveConfirm(true);
-                  }
                   const { judge, managerIdentifier } = pendingMoveJudge;
                   setPendingMoveJudge(null);
                   executeMoveJudge(judge, managerIdentifier);

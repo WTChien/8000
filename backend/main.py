@@ -88,6 +88,7 @@ venue_judge_investments: Dict[str, Dict[str, Dict[str, float]]] = {}
 campaign_history: List[dict] = []
 recently_deleted_campaigns: List[dict] = []
 current_campaign: Optional[dict] = None
+active_campaigns: Dict[str, dict] = {}  # campaign_id -> campaign dict (includes owner_identifier)
 
 DEV_BYPASS_VERIFICATION = os.getenv("DEV_BYPASS_VERIFICATION", "true").lower() == "true"
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "48"))
@@ -156,6 +157,7 @@ class IdentifierRequest(BaseModel):
 
 class NameLoginRequest(BaseModel):
     display_name: str
+    invite_token: Optional[str] = None
 
 
 class VerificationRequest(BaseModel):
@@ -267,6 +269,7 @@ class SystemCampaignResponse(BaseModel):
     started_at: str
     closed_at: Optional[str] = None
     summary: Optional[dict] = None
+    invite_token: Optional[str] = None
 
 
 class RecentlyDeletedCampaignResponse(SystemCampaignResponse):
@@ -277,14 +280,30 @@ class RecentlyDeletedCampaignResponse(SystemCampaignResponse):
 
 class AdminSystemStateResponse(BaseModel):
     current_campaign: Optional[SystemCampaignResponse] = None
+    active_campaigns_list: List[SystemCampaignResponse] = []
     campaigns_by_year: Dict[str, List[SystemCampaignResponse]]
     recently_deleted_by_year: Dict[str, List[RecentlyDeletedCampaignResponse]]
+
+
+class CampaignInviteResponse(BaseModel):
+    id: str
+    year: int
+    label: str
+    status: Literal["active", "closed"]
 
 
 class MemberStatusUpdateRequest(BaseModel):
     assigned_venue_id: Optional[str] = None
     is_voted: Optional[bool] = None
     manager_identifier: Optional[str] = None
+
+
+class AssignJudgeToVenueRequest(BaseModel):
+    identifier: str
+
+
+class AssignMemberCampaignRequest(BaseModel):
+    target_campaign_id: str
 
 
 def now_utc() -> datetime:
@@ -340,8 +359,9 @@ def normalize_campaign_year(value: Optional[int]) -> int:
 def get_member_scope_year(preferred_year: Optional[int] = None) -> int:
     if preferred_year is not None:
         return normalize_campaign_year(preferred_year)
-    if current_campaign:
-        return normalize_campaign_year(int(current_campaign.get("year", now_utc().year)))
+    any_active = next((c for c in active_campaigns.values() if c.get("status") == "active"), None)
+    if any_active:
+        return normalize_campaign_year(int(any_active.get("year", now_utc().year)))
     return normalize_campaign_year(now_utc().year)
 
 
@@ -350,8 +370,8 @@ def get_member_scope_campaign_id(preferred_campaign_id: Optional[str] = None) ->
         value = preferred_campaign_id.strip()
         if value:
             return value
-    if current_campaign:
-        return str(current_campaign.get("id", "")) or None
+    if len(active_campaigns) == 1:
+        return str(next(iter(active_campaigns))) or None
     return None
 
 
@@ -361,8 +381,8 @@ def resolve_campaign_year_by_id(campaign_id: str, fallback_year: Optional[int] =
     if not target:
         return fallback
 
-    if current_campaign and str(current_campaign.get("id", "")) == target:
-        return campaign_record_year(current_campaign, fallback)
+    if target in active_campaigns:
+        return campaign_record_year(active_campaigns[target], fallback)
 
     for item in campaign_history:
         if str(item.get("id", "")) == target:
@@ -396,8 +416,10 @@ def venue_name_by_id(venue_id: str) -> Optional[str]:
 
 def build_venue_response(venue: dict) -> VenueResponse:
     venue_id = str(venue["id"])
+    scope_campaign_id = str(venue.get("campaign_id", "")) or None
     scope_year = get_member_scope_year()
-    scope_campaign_id = get_member_scope_campaign_id()
+    if scope_campaign_id and scope_campaign_id in active_campaigns:
+        scope_year = campaign_record_year(active_campaigns[scope_campaign_id], scope_year)
     assigned_judges = [
         str(user.get("display_name", "未命名評審"))
         for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
@@ -566,11 +588,12 @@ def purge_expired_recently_deleted(campaign_year: int) -> List[dict]:
         db.save_campaign_state(
             campaign_year,
             {
-                "current_campaign": dict(current_campaign) if current_campaign and campaign_record_year(current_campaign) == campaign_year else None,
+                "current_campaign": next((dict(c) for c in active_campaigns.values() if campaign_record_year(c) == campaign_year), None),
                 "campaign_history": campaign_history_for_year(campaign_year),
-                "venues": [dict(venue) for venue in venues] if current_campaign and campaign_record_year(current_campaign) == campaign_year else [],
-                "venue_projects": clone_venue_projects(venue_projects) if current_campaign and campaign_record_year(current_campaign) == campaign_year else {},
-                "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments) if current_campaign and campaign_record_year(current_campaign) == campaign_year else {},
+                "active_campaigns_data": _build_active_campaigns_data(campaign_year),
+                "venues": [dict(v) for v in venues if campaign_record_year(active_campaigns.get(v.get("campaign_id", ""), {}), campaign_year) == campaign_year],
+                "venue_projects": clone_venue_projects(venue_projects),
+                "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments),
                 "recently_deleted_campaigns": active,
             },
         )
@@ -593,26 +616,54 @@ def persist_campaign_state(
         return
 
     target_year = normalize_campaign_year(campaign_year)
-    active_year = campaign_record_year(current_campaign, target_year) if current_campaign else None
-    current_payload = dict(current_campaign) if active_year == target_year else None
     history_payload = history_override if history_override is not None else campaign_history_for_year(target_year)
     deleted_payload = deleted_override if deleted_override is not None else recently_deleted_for_year(target_year)
+
+    year_campaigns = [c for c in active_campaigns.values() if campaign_record_year(c, target_year) == target_year]
+    current_payload = dict(year_campaigns[0]) if year_campaigns else None
 
     db.save_campaign_state(
         target_year,
         {
             "current_campaign": current_payload,
+            "active_campaigns_data": _build_active_campaigns_data(target_year),
             "campaign_history": [dict(item) for item in history_payload],
-            "venues": [dict(venue) for venue in venues] if current_payload else [],
-            "venue_projects": clone_venue_projects(venue_projects) if current_payload else {},
-            "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments) if current_payload else {},
+            "venues": [dict(v) for v in venues if campaign_record_year(active_campaigns.get(v.get("campaign_id", ""), {}), target_year) == target_year],
+            "venue_projects": clone_venue_projects(venue_projects),
+            "venue_judge_investments": clone_venue_judge_investments(venue_judge_investments),
             "recently_deleted_campaigns": [dict(item) for item in deleted_payload],
         },
     )
 
 
+def _build_active_campaigns_data(target_year: int) -> List[dict]:
+    """Serialize all active campaigns for a given year with their venue/project data."""
+    result = []
+    for c in active_campaigns.values():
+        if campaign_record_year(c, target_year) != target_year:
+            continue
+        cid = str(c["id"])
+        c_venues = venues_for_campaign(cid)
+        c_venue_ids = {v["id"] for v in c_venues}
+        result.append({
+            "campaign": dict(c),
+            "venues": [dict(v) for v in c_venues],
+            "venue_projects": clone_venue_projects({
+                vid: venue_projects[vid]
+                for vid in c_venue_ids
+                if vid in venue_projects
+            }),
+            "venue_judge_investments": clone_venue_judge_investments({
+                vid: venue_judge_investments[vid]
+                for vid in c_venue_ids
+                if vid in venue_judge_investments
+            }),
+        })
+    return result
+
+
+
 def restore_active_campaign_state() -> None:
-    global current_campaign
 
     if not db.enabled:
         return
@@ -622,11 +673,55 @@ def restore_active_campaign_state() -> None:
         return
 
     state = restored.get("state", {}) if isinstance(restored, dict) else {}
-    current = state.get("current_campaign")
-    if not isinstance(current, dict):
-        return
 
-    current_campaign = dict(current)
+    # Try new multi-campaign format first
+    active_campaigns_data = state.get("active_campaigns_data", [])
+    if isinstance(active_campaigns_data, list) and active_campaigns_data:
+        for entry in active_campaigns_data:
+            if not isinstance(entry, dict):
+                continue
+            c = entry.get("campaign", {})
+            if not isinstance(c, dict) or not c.get("id"):
+                continue
+            cid = str(c["id"])
+            active_campaigns[cid] = dict(c)
+            for v in entry.get("venues", []):
+                if not isinstance(v, dict):
+                    continue
+                venues.append({
+                    "id": str(v.get("id", "")),
+                    "name": str(v.get("name", "未命名會場")),
+                    "classroom": str(v.get("classroom", "待公布教室")),
+                    "campaign_id": cid,
+                })
+            vp = entry.get("venue_projects", {})
+            if isinstance(vp, dict):
+                venue_projects.update(clone_venue_projects(vp))
+            vji = entry.get("venue_judge_investments", {})
+            if isinstance(vji, dict):
+                venue_judge_investments.update(clone_venue_judge_investments(vji))
+    else:
+        # Fallback: legacy single-campaign format
+        current = state.get("current_campaign")
+        if isinstance(current, dict) and current:
+            cid = str(current.get("id", ""))
+            if cid:
+                active_campaigns[cid] = dict(current)
+                for venue in state.get("venues", []):
+                    if isinstance(venue, dict):
+                        venues.append({
+                            "id": str(venue.get("id", "")),
+                            "name": str(venue.get("name", "未命名會場")),
+                            "classroom": str(venue.get("classroom", "待公布教室")),
+                            "campaign_id": cid,
+                        })
+                vp = state.get("venue_projects", {})
+                if isinstance(vp, dict):
+                    venue_projects.update(clone_venue_projects(vp))
+                vji = state.get("venue_judge_investments", {})
+                if isinstance(vji, dict):
+                    venue_judge_investments.update(clone_venue_judge_investments(vji))
+
     campaign_history[:] = [
         dict(item)
         for item in state.get("campaign_history", [])
@@ -637,25 +732,6 @@ def restore_active_campaign_state() -> None:
         for item in state.get("recently_deleted_campaigns", [])
         if isinstance(item, dict)
     ]
-    venues[:] = [
-        {
-            "id": str(venue.get("id", "")),
-            "name": str(venue.get("name", "未命名會場")),
-            "classroom": str(venue.get("classroom", "待公布教室")),
-        }
-        for venue in state.get("venues", [])
-        if isinstance(venue, dict)
-    ]
-
-    stored_projects = state.get("venue_projects", {})
-    if isinstance(stored_projects, dict):
-        venue_projects.clear()
-        venue_projects.update(clone_venue_projects(stored_projects))
-
-    stored_judge_investments = state.get("venue_judge_investments", {})
-    if isinstance(stored_judge_investments, dict):
-        venue_judge_investments.clear()
-        venue_judge_investments.update(clone_venue_judge_investments(stored_judge_investments))
 
 
 def get_projects_data(venue_id: Optional[str] = None) -> List[dict]:
@@ -732,9 +808,16 @@ def get_verified_user_with_fallback(
         campaign_id=campaign_id,
         allow_legacy=allow_legacy,
     )
+    any_scope = find_verified_user_any_scope(identifier)
+
+    # Preserve admin/super_admin identity across campaign-scoped judge records.
+    if scoped and normalize_role(scoped.get("role", "judge")) == "judge":
+        if any_scope and is_global_admin_record(any_scope):
+            return any_scope
+
     if scoped:
         return scoped
-    return find_verified_user_any_scope(identifier)
+    return any_scope
 
 
 def is_global_admin_record(record: dict) -> bool:
@@ -795,6 +878,7 @@ def upsert_verified_user(
         "assigned_venue_id": existing.get("assigned_venue_id"),
         "is_voted": bool(existing.get("is_voted", False)),
         "manager_identifier": existing.get("manager_identifier") if role == "judge" else None,
+        "managed_campaign_id": existing.get("managed_campaign_id") if role in {"admin", "super_admin"} else None,
         "campaign_year": scope_year,
         "campaign_id": scope_campaign_id,
     }
@@ -824,6 +908,8 @@ def upsert_verified_user(
                 campaign_year=scope_year,
                 campaign_id=scope_campaign_id,
             )
+        if role in {"admin", "super_admin"} and payload.get("managed_campaign_id") is not None:
+            db.set_verified_user_managed_campaign(identifier, payload.get("managed_campaign_id"))
         return
 
     if global_scope:
@@ -928,6 +1014,24 @@ def set_verified_user_manager(
     verified_users[verified_user_store_key(identifier, scope_year, campaign_id=scope_campaign_id)] = existing
 
 
+def set_verified_user_managed_campaign(
+    identifier: str,
+    managed_campaign_id: Optional[str],
+) -> None:
+    existing = get_verified_user(identifier, allow_legacy=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail="找不到管理者資料")
+    if normalize_role(existing.get("role", "judge")) not in {"admin", "super_admin"}:
+        raise HTTPException(status_code=400, detail="僅能設定管理者的場次")
+
+    if db.enabled:
+        db.set_verified_user_managed_campaign(identifier, managed_campaign_id)
+        return
+
+    existing["managed_campaign_id"] = managed_campaign_id
+    verified_users[identifier] = existing
+
+
 def create_session(user: SessionUser) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(hours=TOKEN_TTL_HOURS)
@@ -967,6 +1071,15 @@ def require_roles(*roles: str):
 
 def validate_venue_exists(venue_id: str) -> None:
     if venue_id not in {venue["id"] for venue in venues}:
+        raise HTTPException(status_code=400, detail="會場不存在")
+
+
+def validate_venue_exists_for_campaign(venue_id: str, campaign_id: Optional[str]) -> None:
+    if campaign_id:
+        valid_ids = {venue["id"] for venue in venues_for_campaign(campaign_id)}
+    else:
+        valid_ids = {venue["id"] for venue in venues}
+    if venue_id not in valid_ids:
         raise HTTPException(status_code=400, detail="會場不存在")
 
 
@@ -1010,7 +1123,7 @@ def remove_sessions_for_identifier(identifier: str) -> None:
 
 
 def is_system_active() -> bool:
-    return bool(current_campaign and current_campaign.get("status") == "active")
+    return bool(active_campaigns)
 
 
 def ensure_system_active() -> None:
@@ -1018,10 +1131,69 @@ def ensure_system_active() -> None:
         raise HTTPException(status_code=400, detail="本年度模擬投資評分系統尚未啟動或已關閉")
 
 
-def reset_investment_round_state() -> None:
+def get_any_active_campaign() -> Optional[dict]:
+    """Return the first active campaign (for backwards-compat single-campaign code paths)."""
+    for c in active_campaigns.values():
+        if c.get("status") == "active":
+            return c
+    return None
+
+
+def get_admin_campaign(admin_identifier: str) -> Optional[dict]:
+    """Return the active campaign owned by this admin."""
+    for c in active_campaigns.values():
+        if c.get("owner_identifier") == admin_identifier and c.get("status") == "active":
+            return c
+    return None
+
+
+def is_campaign_active(campaign_id: str) -> bool:
+    c = active_campaigns.get(campaign_id)
+    return bool(c and c.get("status") == "active")
+
+
+def venues_for_campaign(campaign_id: str) -> List[dict]:
+    return [v for v in venues if v.get("campaign_id") == campaign_id]
+
+
+def ensure_admin_has_active_campaign(admin_identifier: str) -> str:
+    """Returns admin's campaign_id, or raises 400 if none active."""
+    c = get_admin_campaign(admin_identifier)
+    if not c:
+        raise HTTPException(status_code=400, detail="您尚未啟動專題會")
+    return str(c["id"])
+
+
+def resolve_manage_campaign_id(user: SessionUser, preferred_campaign_id: Optional[str] = None) -> str:
+    """Resolve target campaign for admin actions.
+    - admin: always their own active campaign
+    - super_admin: can target any active campaign via preferred_campaign_id
+    """
+    if user.role == "admin":
+        return ensure_admin_has_active_campaign(user.identifier)
+
+    target = (preferred_campaign_id or "").strip()
+    if target:
+        campaign = active_campaigns.get(target)
+        if not campaign or campaign.get("status") != "active":
+            raise HTTPException(status_code=404, detail="找不到指定的啟動中場次")
+        return target
+
+    own = get_admin_campaign(user.identifier)
+    if own:
+        return str(own["id"])
+    if active_campaigns:
+        return str(next(iter(active_campaigns.keys())))
+    raise HTTPException(status_code=400, detail="目前沒有啟動中的場次")
+
+
+def reset_investment_round_state(campaign_id: Optional[str] = None) -> None:
+    target_venues = venues_for_campaign(campaign_id) if campaign_id else list(venues)
+    scope_campaign_id = campaign_id or get_member_scope_campaign_id()
     scope_year = get_member_scope_year()
-    scope_campaign_id = get_member_scope_campaign_id()
-    for venue_id in list(venue_projects.keys()):
+    if campaign_id and campaign_id in active_campaigns:
+        scope_year = campaign_record_year(active_campaigns[campaign_id], scope_year)
+    for venue_id in [v["id"] for v in target_venues]:
         venue_projects[venue_id] = clone_default_projects()
         venue_judge_investments[venue_id] = {}
 
@@ -1033,17 +1205,20 @@ def reset_investment_round_state() -> None:
             set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
             set_verified_user_venue(identifier, "", campaign_year=scope_year, campaign_id=scope_campaign_id)
 
-    if is_system_active():
+    if campaign_id and is_campaign_active(campaign_id):
         persist_campaign_state(scope_year)
 
 
-def build_campaign_summary() -> dict:
+def build_campaign_summary(campaign_id: Optional[str] = None) -> dict:
+    scope_campaign_id = campaign_id or get_member_scope_campaign_id()
     scope_year = get_member_scope_year()
-    scope_campaign_id = get_member_scope_campaign_id()
+    if campaign_id and campaign_id in active_campaigns:
+        scope_year = campaign_record_year(active_campaigns[campaign_id], scope_year)
+    target_venues = venues_for_campaign(campaign_id) if campaign_id else list(venues)
     venue_summaries = []
     overall_project_rows: List[dict] = []
 
-    for venue in venues:
+    for venue in target_venues:
         venue_id = str(venue["id"])
         venue_name = str(venue.get("name", venue_id))
         projects_data = get_projects_data(venue_id)
@@ -1196,7 +1371,21 @@ def serialize_campaign(record: dict) -> SystemCampaignResponse:
         started_at=str(record.get("started_at", now_utc().isoformat())),
         closed_at=record.get("closed_at"),
         summary=normalize_campaign_summary(record.get("summary")),
+        invite_token=record.get("invite_token"),
     )
+
+
+
+
+def find_campaign_by_invite_token(token: str) -> Optional[dict]:
+    """Look up a campaign dict by its invite_token (current or history)."""
+    for c in active_campaigns.values():
+        if c.get("invite_token") == token:
+            return c
+    for item in campaign_history:
+        if item.get("invite_token") == token:
+            return item
+    return None
 
 
 def serialize_recently_deleted_campaign(record: dict) -> RecentlyDeletedCampaignResponse:
@@ -1316,8 +1505,12 @@ def get_projects(venue_id: Optional[str] = Query(default=None)):
         ensure_venue_project_store(venue_id)
         project_ids = [str(project.get("id", "")) for project in current_projects]
         judge_map = venue_judge_investments.get(venue_id, {})
+        venue = next((item for item in venues if item["id"] == venue_id), None)
+        scope_campaign_id = str(venue.get("campaign_id", "")) if venue else get_member_scope_campaign_id()
+        scope_campaign_id = scope_campaign_id or None
         scope_year = get_member_scope_year()
-        scope_campaign_id = get_member_scope_campaign_id()
+        if scope_campaign_id and scope_campaign_id in active_campaigns:
+            scope_year = campaign_record_year(active_campaigns[scope_campaign_id], scope_year)
         venue_judges = [
             user
             for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
@@ -1375,10 +1568,12 @@ def get_projects(venue_id: Optional[str] = Query(default=None)):
 
 
 @app.get("/api/venues", response_model=List[VenueResponse])
-def get_venues():
+def get_venues(campaign_id: Optional[str] = Query(default=None)):
     if not is_system_active():
         return []
-    return [build_venue_response(venue) for venue in venues]
+    scope_campaign_id = get_member_scope_campaign_id(campaign_id)
+    target_venues = venues_for_campaign(scope_campaign_id) if scope_campaign_id else list(venues)
+    return [build_venue_response(venue) for venue in target_venues]
 
 
 @app.get("/api/auth/me", response_model=SessionUser)
@@ -1485,13 +1680,36 @@ def login_with_identifier(data: IdentifierRequest):
     token = create_session(user)
     return AuthResponse(access_token=token, user=user)
 
+@app.get("/api/campaign/invite/{invite_token}", response_model=CampaignInviteResponse)
+def get_campaign_invite_info(invite_token: str):
+    """Public endpoint — returns basic campaign info for an invite link."""
+    campaign = find_campaign_by_invite_token(invite_token.strip())
+    if not campaign:
+        raise HTTPException(status_code=404, detail="找不到對應的專題會，邀請連結可能已失效")
+    return CampaignInviteResponse(
+        id=str(campaign.get("id", "")),
+        year=int(campaign.get("year", now_utc().year)),
+        label=str(campaign.get("label", "未命名場次")),
+        status="active" if str(campaign.get("status", "active")) == "active" else "closed",
+    )
+
 
 @app.post("/api/judges/login", response_model=AuthResponse)
 def login_with_name(data: NameLoginRequest):
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    scope_year = get_member_scope_year()
-    scope_campaign_id = get_member_scope_campaign_id()
+    # If the user arrived via an invite link, scope them to that specific campaign.
+    if data.invite_token:
+        invited = find_campaign_by_invite_token(data.invite_token.strip())
+        if not invited:
+            raise HTTPException(status_code=404, detail="邀請連結無效或對應的專題會已不存在")
+        if str(invited.get("status", "")) != "active":
+            raise HTTPException(status_code=400, detail="此邀請連結對應的專題會已結束，無法透過此連結登入")
+        scope_year = campaign_record_year(invited)
+        scope_campaign_id = str(invited.get("id", "")) or None
+    else:
+        scope_year = get_member_scope_year()
+        scope_campaign_id = get_member_scope_campaign_id()
     existing = get_verified_user_with_fallback(
         identifier,
         campaign_year=scope_year,
@@ -1631,7 +1849,7 @@ def join_venue(
     user: SessionUser = Depends(require_roles("judge")),
 ):
     ensure_system_active()
-    validate_venue_exists(data.venue_id)
+    validate_venue_exists_for_campaign(data.venue_id, user.campaign_id)
     record = get_verified_user(user.identifier, campaign_year=user.campaign_year, campaign_id=user.campaign_id)
     if not record:
         raise HTTPException(status_code=404, detail="找不到使用者驗證資料")
@@ -1784,9 +2002,12 @@ def get_judges():
 
 @app.get("/api/admin/system-state", response_model=AdminSystemStateResponse)
 def get_admin_system_state(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
+    all_active = [serialize_campaign(c) for c in active_campaigns.values() if c.get("status") == "active"]
+    own = get_admin_campaign(user.identifier)
+    current = serialize_campaign(own) if own else None
     return AdminSystemStateResponse(
-        current_campaign=serialize_campaign(current_campaign) if current_campaign else None,
+        current_campaign=current,
+        active_campaigns_list=all_active,
         campaigns_by_year=campaigns_grouped_by_year(),
         recently_deleted_by_year=recently_deleted_grouped_by_year(),
     )
@@ -1939,11 +2160,9 @@ def start_system_campaign(
     data: SystemStartRequest,
     user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
-    _ = user
-    global current_campaign
-
-    if is_system_active():
-        raise HTTPException(status_code=400, detail="目前已有啟動中的專題發表場次，請先關閉")
+    # admin one-at-a-time; super_admin can run multiple campaigns simultaneously.
+    if user.role == "admin" and get_admin_campaign(user.identifier):
+        raise HTTPException(status_code=400, detail="您已有啟動中的專題會，請先關閉後再開新場")
 
     campaign_year = normalize_campaign_year(now_utc().year)
 
@@ -1954,7 +2173,7 @@ def start_system_campaign(
 
     campaign_id = f"campaign-{campaign_year}-{secrets.token_hex(3)}"
     started_at = now_utc().isoformat()
-    current_campaign = {
+    new_campaign = {
         "id": campaign_id,
         "year": campaign_year,
         "label": label,
@@ -1962,37 +2181,53 @@ def start_system_campaign(
         "started_at": started_at,
         "closed_at": None,
         "summary": None,
+        "owner_identifier": user.identifier,
     }
+    new_campaign["invite_token"] = secrets.token_urlsafe(8)
+    active_campaigns[campaign_id] = new_campaign
 
-    reset_investment_round_state()
+    if user.role == "admin":
+        set_verified_user_managed_campaign(user.identifier, campaign_id)
+
+    reset_investment_round_state(campaign_id)
     persist_campaign_state(campaign_year)
-    return serialize_campaign(current_campaign)
+    return serialize_campaign(new_campaign)
 
 
 @app.post("/api/admin/system/close", response_model=SystemCampaignResponse)
-def close_system_campaign(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
-    global current_campaign
-
-    if not current_campaign or current_campaign.get("status") != "active":
+def close_system_campaign(
+    campaign_id: Optional[str] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
+    closing_id = resolve_manage_campaign_id(user, campaign_id)
+    target_campaign = active_campaigns.get(closing_id)
+    if not target_campaign:
         raise HTTPException(status_code=400, detail="目前沒有啟動中的場次可關閉")
 
-    closing_year = campaign_record_year(current_campaign)
+    closing_year = campaign_record_year(target_campaign)
 
-    closed = dict(current_campaign)
+    closed = dict(target_campaign)
     closed["status"] = "closed"
     closed["closed_at"] = now_utc().isoformat()
-    closed["summary"] = normalize_campaign_summary(build_campaign_summary())
+    closed["summary"] = normalize_campaign_summary(build_campaign_summary(closing_id))
     campaign_history.append(closed)
 
-    # Venue data is runtime-only per campaign. Clear it after archive/close.
-    venues.clear()
-    venue_projects.clear()
-    venue_judge_investments.clear()
+    # Remove this campaign's venues/data from runtime state.
+    closed_venue_ids = {v["id"] for v in venues_for_campaign(closing_id)}
+    venues[:] = [v for v in venues if v.get("campaign_id") != closing_id]
+    for vid in closed_venue_ids:
+        venue_projects.pop(vid, None)
+        venue_judge_investments.pop(vid, None)
+    active_campaigns.pop(closing_id, None)
 
-    current_campaign = None
+    owner_identifier = str(closed.get("owner_identifier", ""))
+    owner_record = get_verified_user(owner_identifier, allow_legacy=True) if owner_identifier else None
+    if owner_record and normalize_role(owner_record.get("role", "judge")) == "admin":
+        if str(owner_record.get("managed_campaign_id", "")) == closing_id:
+            set_verified_user_managed_campaign(owner_identifier, None)
+
     prev_history = campaign_history_for_year(closing_year)
-    full_history = [h for h in prev_history if str(h.get("id", "")) != str(closed["id"])] + [closed]
+    full_history = [h for h in prev_history if str(h.get("id", "")) != closing_id] + [closed]
     persist_campaign_state(closing_year, history_override=full_history)
 
     return serialize_campaign(closed)
@@ -2000,18 +2235,31 @@ def close_system_campaign(user: SessionUser = Depends(require_roles("super_admin
 
 @app.get("/api/admin/overview", response_model=AdminOverviewResponse)
 def get_admin_overview(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
+    own = get_admin_campaign(user.identifier)
+    if own:
+        cid = str(own["id"])
+        c_year = campaign_record_year(own, get_member_scope_year())
+        c_venues = venues_for_campaign(cid)
+        c_members = list_verified_users(campaign_year=c_year, campaign_id=cid)
+    else:
+        c_venues = list(venues)
+        c_members = list_verified_users(campaign_year=get_member_scope_year(), campaign_id=get_member_scope_campaign_id())
     return AdminOverviewResponse(
         active_sessions=len(auth_sessions),
-        verified_users=list_verified_users(campaign_year=get_member_scope_year(), campaign_id=get_member_scope_campaign_id()),
-        venues=[build_venue_response(venue) for venue in venues],
+        verified_users=c_members,
+        venues=[build_venue_response(v) for v in c_venues],
     )
 
 
 @app.post("/api/admin/venues", response_model=VenueResponse)
-def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
+def create_venue(
+    data: VenueCreateRequest,
+    campaign_id: Optional[str] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
     ensure_system_active()
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
+    campaign = active_campaigns[target_campaign_id]
     name = data.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="會場名稱不可為空")
@@ -2025,10 +2273,10 @@ def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_r
         venue_id = f"{base}-{counter}"
         counter += 1
 
-    venue = {"id": venue_id, "name": name, "classroom": classroom}
+    venue = {"id": venue_id, "name": name, "classroom": classroom, "campaign_id": target_campaign_id}
     venues.append(venue)
     ensure_venue_project_store(venue_id)
-    persist_campaign_state(get_member_scope_year())
+    persist_campaign_state(campaign_record_year(campaign))
     return build_venue_response(venue)
 
 
@@ -2036,16 +2284,17 @@ def create_venue(data: VenueCreateRequest, user: SessionUser = Depends(require_r
 def update_venue(
     venue_id: str,
     data: VenueUpdateRequest,
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
-    _ = user
     ensure_system_active()
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
     name = data.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="會場名稱不可為空")
 
     for venue in venues:
-        if venue["id"] == venue_id:
+        if venue["id"] == venue_id and venue.get("campaign_id") == target_campaign_id:
             venue["name"] = name
             if data.classroom is not None:
                 classroom = data.classroom.strip()
@@ -2053,7 +2302,7 @@ def update_venue(
                     raise HTTPException(status_code=400, detail="教室名稱不可為空")
                 venue["classroom"] = classroom
             venue.setdefault("classroom", "待公布教室")
-            persist_campaign_state(get_member_scope_year())
+            persist_campaign_state(campaign_record_year(active_campaigns[target_campaign_id]))
             return build_venue_response(venue)
 
     raise HTTPException(status_code=404, detail="找不到指定會場")
@@ -2063,11 +2312,12 @@ def update_venue(
 def update_venue_projects(
     venue_id: str,
     data: VenueProjectsUpdateRequest,
+    campaign_id: Optional[str] = Query(default=None),
     user: SessionUser = Depends(require_roles("super_admin", "admin")),
 ):
-    _ = user
     ensure_system_active()
-    validate_venue_exists(venue_id)
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
+    validate_venue_exists_for_campaign(venue_id, target_campaign_id)
 
     project_names = normalize_project_names(data.project_names)
     venue_projects[venue_id] = [
@@ -2091,27 +2341,32 @@ def update_venue_projects(
         if identifier:
             set_verified_user_voted(identifier, False, campaign_year=scope_year, campaign_id=scope_campaign_id)
 
-    venue = next((item for item in venues if item["id"] == venue_id), None)
+    venue = next((item for item in venues if item["id"] == venue_id and item.get("campaign_id") == target_campaign_id), None)
     if not venue:
         raise HTTPException(status_code=404, detail="找不到指定會場")
-    persist_campaign_state(get_member_scope_year())
+    persist_campaign_state(campaign_record_year(active_campaigns[target_campaign_id]))
     return build_venue_response(venue)
 
 
 @app.delete("/api/admin/venues/{venue_id}")
-def delete_venue(venue_id: str, user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
+def delete_venue(
+    venue_id: str,
+    campaign_id: Optional[str] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
     ensure_system_active()
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
+    campaign = active_campaigns[target_campaign_id]
 
-    scope_year = get_member_scope_year()
-    scope_campaign_id = get_member_scope_campaign_id()
+    scope_year = campaign_record_year(campaign)
+    scope_campaign_id = target_campaign_id
     assigned_users = [
         u
         for u in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
         if normalize_role(u.get("role", "judge")) == "judge" and u.get("assigned_venue_id") == venue_id
     ]
 
-    next_venues = [venue for venue in venues if venue["id"] != venue_id]
+    next_venues = [venue for venue in venues if not (venue["id"] == venue_id and venue.get("campaign_id") == target_campaign_id)]
     if len(next_venues) == len(venues):
         raise HTTPException(status_code=404, detail="找不到指定會場")
 
@@ -2149,6 +2404,7 @@ def list_members(
                 "role": normalize_role(account.get("role", "judge")),
                 "assigned_venue_id": account.get("assigned_venue_id"),
                 "manager_identifier": account.get("manager_identifier"),
+                "managed_campaign_id": account.get("managed_campaign_id"),
                 "is_voted": bool(account.get("is_voted", False)),
                 "campaign_year": account.get("campaign_year"),
                 "campaign_id": account.get("campaign_id"),
@@ -2161,7 +2417,8 @@ def list_members(
         ]
         return {"members": result, "year": scope_year, "campaign_id": None}
 
-    # Normal behavior: return campaign-scoped judge members
+    # Normal behavior: return campaign-scoped judge members.
+    # Also include campaign-relevant admins so promoted manager remains visible.
     members = []
     for account in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id):
         if str(account.get("identifier", "")).startswith("name::") and normalize_role(account.get("role", "judge")) == "judge":
@@ -2172,11 +2429,38 @@ def list_members(
                     "role": normalize_role(account.get("role", "judge")),
                     "assigned_venue_id": account.get("assigned_venue_id"),
                     "manager_identifier": account.get("manager_identifier"),
+                    "managed_campaign_id": account.get("managed_campaign_id"),
                     "is_voted": bool(account.get("is_voted", False)),
                     "campaign_year": scope_year,
                     "campaign_id": scope_campaign_id,
                 }
             )
+    campaign_owner_identifier = None
+    if scope_campaign_id and scope_campaign_id in active_campaigns:
+        campaign_owner_identifier = str(active_campaigns[scope_campaign_id].get("owner_identifier", "")) or None
+
+    for account in list_verified_users():
+        if not str(account.get("identifier", "")).startswith("name::"):
+            continue
+        if normalize_role(account.get("role", "judge")) != "admin":
+            continue
+        managed_campaign_id = str(account.get("managed_campaign_id", "") or "")
+        identifier = str(account.get("identifier", ""))
+        if scope_campaign_id and managed_campaign_id != scope_campaign_id and identifier != campaign_owner_identifier:
+            continue
+        members.append(
+            {
+                "identifier": identifier,
+                "display_name": account.get("display_name"),
+                "role": "admin",
+                "assigned_venue_id": None,
+                "manager_identifier": None,
+                "managed_campaign_id": managed_campaign_id or (scope_campaign_id if identifier == campaign_owner_identifier else None),
+                "is_voted": False,
+                "campaign_year": None,
+                "campaign_id": scope_campaign_id,
+            }
+        )
     return {"members": members, "year": scope_year, "campaign_id": scope_campaign_id}
 
 
@@ -2192,37 +2476,64 @@ def create_member(
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
     display_name = normalize_display_name(data.display_name)
     identifier = build_name_identifier(display_name)
-    if get_verified_user_with_fallback(
+
+    existing_in_scope = get_verified_user(
         identifier,
         campaign_year=scope_year,
         campaign_id=scope_campaign_id,
-        allow_legacy=True,
-    ):
+        allow_legacy=False,
+    )
+    if existing_in_scope:
         raise HTTPException(status_code=400, detail="此姓名成員已存在")
 
     if data.role == "admin":
         if user.role != "super_admin":
             raise HTTPException(status_code=403, detail="僅最高管理者可新增系所管理者")
+        if find_verified_user_any_scope(identifier):
+            raise HTTPException(status_code=400, detail="此姓名成員已存在")
+
+    source_member = find_verified_user_any_scope(identifier)
+    if data.role == "judge" and source_member:
+        source_role = normalize_role(source_member.get("role", "judge"))
+        if source_role in {"admin", "super_admin"}:
+            raise HTTPException(status_code=400, detail="此姓名已是管理者，無法直接作為評審加入場次")
 
     is_global_role = data.role in {"super_admin", "admin"}
-    access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
+    access_until = parse_time(source_member.get("access_until")) if source_member else None
+    if not access_until:
+        access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
+
+    member_display_name = str(source_member.get("display_name", display_name)) if source_member else display_name
+
     upsert_verified_user(
         identifier,
-        display_name,
+        member_display_name,
         data.role,
         access_until,
         campaign_year=None if is_global_role else scope_year,
         campaign_id=None if is_global_role else scope_campaign_id,
         global_scope=is_global_role,
     )
+
+    if data.role == "judge" and source_member and source_member.get("manager_identifier"):
+        set_verified_user_manager(
+            identifier,
+            str(source_member.get("manager_identifier", "")),
+            campaign_year=scope_year,
+            campaign_id=scope_campaign_id,
+        )
+    if data.role == "admin" and scope_campaign_id:
+        set_verified_user_managed_campaign(identifier, scope_campaign_id)
+
     return {
         "success": True,
         "member": {
             "identifier": identifier,
-            "display_name": display_name,
+            "display_name": member_display_name,
             "role": data.role,
             "assigned_venue_id": None,
-            "manager_identifier": None,
+            "manager_identifier": source_member.get("manager_identifier") if data.role == "judge" and source_member else None,
+            "managed_campaign_id": scope_campaign_id if data.role == "admin" else None,
             "is_voted": False,
             "campaign_year": None if is_global_role else scope_year,
             "campaign_id": None if is_global_role else scope_campaign_id,
@@ -2277,6 +2588,8 @@ def update_member(
             campaign_year=scope_year,
             campaign_id=scope_campaign_id,
         )
+    elif next_role == "admin":
+        set_verified_user_managed_campaign(identifier, scope_campaign_id)
 
     # Remove stale scoped copy when role changed to a global one
     if is_global_role and db.enabled:
@@ -2327,7 +2640,7 @@ def update_member_status(
     if data.assigned_venue_id is not None:
         venue_id = data.assigned_venue_id.strip()
         if venue_id:
-            validate_venue_exists(venue_id)
+            validate_venue_exists_for_campaign(venue_id, scope_campaign_id)
             set_verified_user_venue(identifier, venue_id, campaign_year=scope_year, campaign_id=scope_campaign_id)
         else:
             set_verified_user_venue(identifier, "", campaign_year=scope_year, campaign_id=scope_campaign_id)
@@ -2359,6 +2672,7 @@ def update_member_status(
             "role": normalize_role(updated.get("role", "judge")),
             "assigned_venue_id": updated.get("assigned_venue_id"),
             "manager_identifier": updated.get("manager_identifier"),
+            "managed_campaign_id": updated.get("managed_campaign_id"),
             "is_voted": bool(updated.get("is_voted", False)),
             "campaign_year": scope_year,
             "campaign_id": scope_campaign_id,
@@ -2462,10 +2776,115 @@ def authorize_user(
 
 @app.post("/api/admin/reset-round", response_model=AdminRoundResetResponse)
 def reset_round(user: SessionUser = Depends(require_roles("super_admin", "admin"))):
-    _ = user
-    reset_investment_round_state()
+    own = get_admin_campaign(user.identifier)
+    if own:
+        reset_investment_round_state(str(own["id"]))
+    else:
+        reset_investment_round_state()
 
     return AdminRoundResetResponse(success=True, message="回合已重置，投資與評審投票狀態已清空")
+
+
+@app.post("/api/admin/venues/{venue_id}/assign-judge")
+def admin_assign_judge_to_venue(
+    venue_id: str,
+    data: AssignJudgeToVenueRequest,
+    campaign_id: Optional[str] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
+    campaign = active_campaigns[target_campaign_id]
+    validate_venue_exists_for_campaign(venue_id, target_campaign_id)
+
+    identifier = data.identifier.strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="缺少評審識別")
+
+    scope_year = campaign_record_year(campaign)
+    account = get_verified_user(identifier, campaign_year=scope_year, campaign_id=target_campaign_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="找不到評審")
+    if normalize_role(account.get("role", "judge")) != "judge":
+        raise HTTPException(status_code=400, detail="僅能分配評審到會場")
+    if bool(account.get("is_voted", False)):
+        raise HTTPException(status_code=400, detail="評審已鎖定投票，無法重新分配")
+
+    set_verified_user_venue(identifier, venue_id, campaign_year=scope_year, campaign_id=target_campaign_id)
+    persist_campaign_state(scope_year)
+
+    updated = get_verified_user(identifier, campaign_year=scope_year, campaign_id=target_campaign_id) or account
+    return {
+        "success": True,
+        "member": {
+            "identifier": updated.get("identifier", identifier),
+            "display_name": updated.get("display_name", ""),
+            "role": normalize_role(updated.get("role", "judge")),
+            "assigned_venue_id": updated.get("assigned_venue_id"),
+            "manager_identifier": updated.get("manager_identifier"),
+            "is_voted": bool(updated.get("is_voted", False)),
+            "campaign_year": scope_year,
+            "campaign_id": target_campaign_id,
+        },
+    }
+
+
+@app.post("/api/admin/members/{identifier}/assign-campaign")
+def assign_member_to_campaign(
+    identifier: str,
+    data: AssignMemberCampaignRequest,
+    user: SessionUser = Depends(require_roles("super_admin")),
+):
+    _ = user
+    target_campaign_id = (data.target_campaign_id or "").strip()
+    if not target_campaign_id:
+        raise HTTPException(status_code=400, detail="缺少目標場次")
+
+    target_campaign = active_campaigns.get(target_campaign_id)
+    if not target_campaign:
+        raise HTTPException(status_code=404, detail="找不到目標場次")
+    if str(target_campaign.get("status", "")) != "active":
+        raise HTTPException(status_code=400, detail="只能分配到啟動中的場次")
+
+    source = find_verified_user_any_scope(identifier)
+    if not source:
+        raise HTTPException(status_code=404, detail="找不到成員")
+
+    role = normalize_role(source.get("role", "judge"))
+    display_name = str(source.get("display_name", identifier))
+    access_until = parse_time(source.get("access_until")) or (now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS))
+
+    target_year = campaign_record_year(target_campaign)
+
+    if role == "admin":
+        set_verified_user_managed_campaign(identifier, target_campaign_id)
+    elif role == "judge":
+        old_campaign_id = source.get("campaign_id")
+        old_campaign_year = source.get("campaign_year")
+
+        upsert_verified_user(
+            identifier,
+            display_name,
+            "judge",
+            access_until,
+            campaign_year=target_year,
+            campaign_id=target_campaign_id,
+            global_scope=False,
+        )
+        set_verified_user_voted(identifier, False, campaign_year=target_year, campaign_id=target_campaign_id)
+        set_verified_user_venue(identifier, "", campaign_year=target_year, campaign_id=target_campaign_id)
+
+        if old_campaign_id and old_campaign_id != target_campaign_id:
+            if db.enabled:
+                old_doc_id = db._identity_doc_id(identifier, campaign_year=old_campaign_year, campaign_id=old_campaign_id)
+                db._client.collection("verified_users").document(old_doc_id).delete()
+            else:
+                old_key = verified_user_store_key(identifier, int(old_campaign_year or target_year), campaign_id=str(old_campaign_id))
+                verified_users.pop(old_key, None)
+    else:
+        raise HTTPException(status_code=400, detail="此角色不可分配場次")
+
+    persist_campaign_state(target_year)
+    return {"success": True}
 
 
 @app.get("/")
