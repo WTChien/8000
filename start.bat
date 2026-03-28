@@ -25,8 +25,11 @@ if not exist frontend (
 echo 開始啟動 FundThePitch...
 echo.
 
+REM Create logs directory
+if not exist logs mkdir logs
+
 REM Start backend
-echo [1/2] 啟動後端服務器...
+echo [1/2] 啟動後端服務器（背景執行）...
 python -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] 缺少 Python 套件 fastapi
@@ -36,21 +39,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
-start "FundThePitch Backend" cmd /k "cd /d %~dp0backend && python main.py"
+start /b python backend\main.py > logs\backend.log 2>&1
 echo [OK] 後端服務器啟動
 echo    URL: http://localhost:9000
 echo    API 文檔: http://localhost:9000/docs
 echo.
 
-REM Start frontend in a new window
-echo [2/2] 啟動前端應用...
-cd frontend
-if not exist node_modules (
+REM Start frontend
+echo [2/2] 啟動前端應用（背景執行）...
+if not exist frontend\node_modules (
     echo    首次運行，正在安裝依賴...
+    cd frontend
     call npm install
+    cd ..
 )
-start cmd /k npm start
-cd ..
+start /b cmd /c "cd /d %~dp0frontend && npm start > ..\logs\frontend.log 2>&1"
 
 echo.
 echo ==========================================

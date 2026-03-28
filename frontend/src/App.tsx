@@ -1737,9 +1737,9 @@ function App() {
                       <span>{stats.managers} 管理者 / {stats.judges} 評審</span>
                     </div>
                     <div className="campaign-assignment-body">
-                      {merged.map((member) => (
+                      {merged.map((member, idx) => (
                         <div
-                          key={`campaign-member-${campaign.id}-${member.identifier}`}
+                          key={`campaign-member-${campaign.id}-${member.identifier}-${idx}`}
                           className={`venue-judge-card ${member.role === 'admin' ? 'campaign-role-admin' : 'campaign-role-judge'} ${assigningMemberId === member.identifier ? 'loading' : ''}`}
                           draggable={assigningMemberId !== member.identifier}
                           onDragStart={() => setDraggingCampaignMemberId(member.identifier)}
@@ -1841,7 +1841,7 @@ function App() {
           </div>
         ) : (
           <div className="member-list-table">
-            {sortedMembersByTag.map((member) => {
+            {sortedMembersByTag.map((member, idx) => {
               const campaignId = member.role === 'admin' ? member.managed_campaign_id : member.campaign_id;
               const campaignInfo = campaignOptions.find((campaign) => campaign.id === campaignId);
               const campaignTag = campaignInfo
@@ -1851,7 +1851,7 @@ function App() {
               const lockTag = member.is_voted ? '已鎖定' : '可編輯';
               return (
                 <button
-                  key={`member-row-${member.identifier}`}
+                  key={`member-row-${member.identifier}-${idx}`}
                   type="button"
                   className="member-list-row"
                   onClick={() => {
