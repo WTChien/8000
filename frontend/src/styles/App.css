@@ -1,12 +1,12 @@
 :root {
-  --bg-main: #0f172a;
-  --bg-card: #1e293b;
-  --accent-invest: #eab308;
-  --accent-growth: #22c55e;
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --border-soft: rgba(148, 163, 184, 0.24);
-  --overlay-surface: rgba(30, 41, 59, 0.72);
+  --bg-main: #f3f4f6;
+  --bg-card: #ffffff;
+  --accent-invest: #3b82f6;
+  --accent-growth: #2563eb;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --border-soft: rgba(15, 23, 42, 0.14);
+  --overlay-surface: rgba(255, 255, 255, 0.94);
   --danger: #ef4444;
 }
 
@@ -24,6 +24,7 @@ body,
 
 body {
   font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+  font-size: 18px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: var(--bg-main);
@@ -33,8 +34,8 @@ body {
 .app-container {
   min-height: 100vh;
   background:
-    radial-gradient(1200px 500px at 12% -10%, rgba(34, 197, 94, 0.1), transparent 62%),
-    radial-gradient(900px 420px at 88% -15%, rgba(234, 179, 8, 0.14), transparent 64%),
+    radial-gradient(1200px 500px at 12% -10%, rgba(37, 99, 235, 0.12), transparent 62%),
+    radial-gradient(900px 420px at 88% -15%, rgba(59, 130, 246, 0.2), transparent 64%),
     var(--bg-main);
 }
 
@@ -49,6 +50,25 @@ body {
   padding: 18px 32px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--overlay-surface);
+}
+
+.navigation-top-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nav-toggle {
+  display: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 700;
+  padding: 8px 12px;
 }
 
 .navigation h1 {
@@ -310,7 +330,7 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
   padding: 12px;
-  background: rgba(30, 41, 59, 0.72);
+  background: #ffffff;
   cursor: grab;
   transition: opacity 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
 }
@@ -327,7 +347,7 @@ body {
 
 .venue-judge-meta {
   margin-top: 6px;
-  color: var(--text-secondary);
+  color: #475569;
   font-size: 12px;
 }
 
@@ -370,7 +390,7 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 14px;
   padding: 12px;
-  background: rgba(15, 23, 42, 0.56);
+  background: #f8fafc;
   min-height: 220px;
 }
 
@@ -464,13 +484,13 @@ body {
 }
 
 .campaign-role-admin {
-  border-color: rgba(249, 115, 22, 0.45);
-  background: linear-gradient(135deg, rgba(249, 115, 22, 0.15), rgba(30, 41, 59, 0.72));
+  border-color: rgba(59, 130, 246, 0.65);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.22), #ffffff);
 }
 
 .campaign-role-judge {
-  border-color: rgba(14, 165, 233, 0.45);
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(30, 41, 59, 0.72));
+  border-color: rgba(37, 99, 235, 0.55);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.16), #ffffff);
 }
 
 .invite-banner {
@@ -973,6 +993,7 @@ body {
 .section p {
   color: var(--text-secondary);
   line-height: 1.65;
+  font-size: 18px;
 }
 
 .section strong {
@@ -1034,7 +1055,7 @@ body {
   display: block;
   margin-bottom: 8px;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 700;
 }
 
@@ -1046,7 +1067,7 @@ body {
   background: rgba(15, 23, 42, 0.6);
   color: var(--text-primary);
   padding: 11px 12px;
-  font-size: 14px;
+  font-size: 18px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -1377,8 +1398,18 @@ body {
   border-radius: 12px;
   padding: 18px;
   margin-bottom: 16px;
-  background: rgba(15, 23, 42, 0.45);
+  background: #f8fafc;
   transition: border-color 0.24s ease, transform 0.24s ease;
+}
+
+.investment-item.invested {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.investment-item.uninvested {
+  border-color: rgba(59, 130, 246, 0.6);
+  background: rgba(59, 130, 246, 0.15);
 }
 
 .investment-item:hover {
@@ -1408,7 +1439,7 @@ body {
   color: var(--text-primary);
   padding: 10px 12px;
   min-width: 110px;
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
 }
 
@@ -1424,6 +1455,7 @@ body {
   background: rgba(148, 163, 184, 0.08);
   color: var(--text-primary);
   font-weight: 700;
+  font-size: 17px;
   padding: 10px 12px;
   cursor: pointer;
   transition: border-color 0.2s ease, transform 0.2s ease;
@@ -1675,12 +1707,12 @@ body {
   border: none;
   border-radius: 10px;
   padding: 14px 16px;
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 800;
   letter-spacing: 0.02em;
   cursor: pointer;
-  color: var(--bg-main);
-  background: linear-gradient(90deg, var(--accent-growth), rgba(34, 197, 94, 0.82));
+  color: #ffffff;
+  background: linear-gradient(90deg, var(--accent-growth), #1d4ed8);
   transition: filter 0.2s ease, transform 0.2s ease;
 }
 
@@ -1708,7 +1740,7 @@ body {
   border: none;
   border-radius: 10px;
   padding: 14px 16px;
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 800;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -1716,13 +1748,13 @@ body {
 }
 
 .judge-action-button.draft {
-  color: #e0f2fe;
-  background: linear-gradient(90deg, #0369a1, #0284c7);
+  color: #ffffff;
+  background: linear-gradient(90deg, #1d4ed8, #2563eb);
 }
 
 .judge-action-button.lock {
-  color: var(--bg-main);
-  background: linear-gradient(90deg, var(--accent-growth), rgba(34, 197, 94, 0.82));
+  color: #0f172a;
+  background: linear-gradient(90deg, var(--accent-invest), #eab308);
 }
 
 .judge-action-button:hover:not(:disabled) {
@@ -2139,6 +2171,22 @@ body {
     padding: 16px;
     flex-direction: column;
     align-items: stretch;
+    gap: 12px;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .nav-buttons {
+    display: none;
+    width: 100%;
+  }
+
+  .nav-buttons.open {
+    display: flex;
   }
 
   .nav-buttons button {
@@ -2601,7 +2649,7 @@ body {
     gap: 16px;
     padding: 11px 20px;
     border-radius: 10px;
-    background: rgba(15, 23, 42, 0.5);
+    background: #f8fafc;
     border: 1px solid rgba(148, 163, 184, 0.15);
     opacity: 0;
   }
@@ -2919,8 +2967,8 @@ body {
 
 .member-name {
   font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 700;
+  color: #0f172a;
   word-break: break-word;
 }
 
@@ -2998,4 +3046,246 @@ body {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* Light mode consolidation */
+.admin-shell,
+.admin-loading-section,
+.admin-launch-panel,
+.venue-col,
+.campaign-assignment-col,
+.admin-invite-box,
+.admin-tab-strip,
+.admin-modal,
+.admin-member-checklist,
+.admin-member-check-item,
+.history-venue-card,
+.history-project-row,
+.history-overall-row,
+.lobby-card,
+.summary-item,
+.stat-card,
+.dashboard-chart,
+.dashboard-details,
+.member-card,
+.member-detail-info,
+.custom-tooltip,
+.judge-upload-modal,
+.dashboard-chart .recharts-responsive-container,
+.judge-legend-item {
+  background: #ffffff;
+  color: var(--text-primary);
+}
+
+.admin-shell {
+  background:
+    radial-gradient(780px 280px at 12% 0%, rgba(37, 99, 235, 0.08), transparent 70%),
+    radial-gradient(640px 260px at 88% 4%, rgba(59, 130, 246, 0.14), transparent 68%),
+    #f8fafc;
+}
+
+.campaign-card {
+  border: 1px solid rgba(37, 99, 235, 0.24);
+  background:
+    linear-gradient(180deg, rgba(37, 99, 235, 0.08), rgba(59, 130, 246, 0.08)),
+    #ffffff;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08);
+}
+
+.campaign-card-header button,
+.admin-history-actions button {
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.28);
+}
+
+.admin-history-row-deleted .admin-history-actions button {
+  background: rgba(59, 130, 246, 0.18);
+  color: #854d0e;
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.member-card:hover,
+.lobby-card:hover,
+.stat-card:hover,
+.dashboard-chart .recharts-responsive-container:hover,
+.investment-item:hover {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.1);
+}
+
+.member-card-admin {
+  border-color: rgba(59, 130, 246, 0.55);
+  background: linear-gradient(160deg, rgba(59, 130, 246, 0.16), #ffffff);
+}
+
+.member-card-judge {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: linear-gradient(160deg, rgba(37, 99, 235, 0.12), #ffffff);
+}
+
+.member-card-admin .member-role-chip {
+  color: #854d0e;
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.member-card-judge .member-role-chip {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+.admin-modal {
+  border-color: rgba(37, 99, 235, 0.26);
+  box-shadow: 0 20px 46px rgba(15, 23, 42, 0.18);
+}
+
+.judge-upload-backdrop,
+.admin-modal-backdrop {
+  background: rgba(148, 163, 184, 0.32);
+}
+
+.judge-upload-modal {
+  border-color: rgba(37, 99, 235, 0.25);
+}
+
+.dashboard-chart .recharts-bar-rectangle path {
+  fill: #2563eb !important;
+}
+
+.dashboard-chart .recharts-bar-rectangle:nth-of-type(2n) path {
+  fill: #facc15 !important;
+}
+
+.chart-warning,
+.validation-message,
+.invite-banner,
+.lobby-tag,
+.venue-project-tag {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #854d0e;
+}
+
+.currency,
+.interim-result,
+.dashboard-venue-card.my-venue,
+.lobby-card.active,
+.admin-status-badge {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.4);
+  color: #1d4ed8;
+}
+
+.admin-kicker,
+.stat-value,
+.venue-view-project-amount,
+.history-overall-row span:last-child,
+.details-table .amount {
+  color: #1d4ed8;
+}
+
+/* Contrast fixes for readability */
+.investment-input,
+.form-group select,
+.input-group select,
+.admin-invite-row input,
+.admin-invite-row .investment-input,
+.member-edit-form .form-group input,
+.member-edit-form .form-group select {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.investment-input::placeholder,
+.admin-invite-row input::placeholder {
+  color: #64748b;
+  opacity: 1;
+}
+
+.input-group button,
+.admin-launch-actions button:not(.submit-button),
+.admin-modal-actions button:not(.submit-button),
+.nav-buttons button,
+.venue-card-actions button {
+  background: #f8fafc;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.input-group button:hover,
+.admin-launch-actions button:not(.submit-button):hover,
+.admin-modal-actions button:not(.submit-button):hover,
+.nav-buttons button:hover,
+.venue-card-actions button:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.admin-invite-row button {
+  background: #e0f2fe;
+  color: #0f172a;
+  border-color: #7dd3fc;
+}
+
+.admin-invite-qr-btn {
+  background: #fef3c7 !important;
+  color: #854d0e !important;
+  border-color: #facc15 !important;
+}
+
+.admin-note,
+.venue-col-subtitle,
+.member-tag,
+.lobby-card p,
+.my-venue-label,
+.chart-note,
+.judge-legend-item,
+.tooltip-breakdown-row,
+.history-project-row,
+.history-overall-row,
+.info-row label,
+.form-note {
+  color: #334155;
+}
+
+.admin-kicker,
+.admin-status-badge,
+.member-role-subtitle-admin,
+.member-role-subtitle-judge,
+.member-tag.role,
+.member-tag.campaign,
+.member-tag.venue {
+  color: #1d4ed8;
+}
+
+.member-tag.lock.locked {
+  color: #b91c1c;
+  border-color: rgba(185, 28, 28, 0.35);
+}
+
+.member-tag.lock.editable {
+  color: #854d0e;
+  border-color: rgba(133, 77, 14, 0.35);
+}
+
+.campaign-card-header button,
+.admin-history-actions button {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.summary-item,
+.stat-card,
+.lobby-card,
+.member-list-row,
+.history-project-row,
+.history-overall-row,
+.dashboard-chart .recharts-responsive-container,
+.venue-view-projects,
+.member-detail-info {
+  border-color: #dbe2ea;
 }

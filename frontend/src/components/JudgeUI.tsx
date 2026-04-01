@@ -99,8 +99,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       setInvestments(initialInvestments);
       setError(null);
     } catch (err: unknown) {
-      const message = axios.isAxiosError(err) ? err.message : '未知錯誤';
-      setError('無法載入專題列表: ' + message);
+      setError('無法載入專題列表。發生錯誤，請聯絡系統管理員');
       console.error('Error fetching projects:', err);
     } finally {
       if (showLoader) {
@@ -140,6 +139,11 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
     return totalInvested === TOTAL_BUDGET;
   }, [investments, projects, TOTAL_BUDGET]);
 
+  // Check if all projects have > 0 investment
+  const hasZeroInvestment = useCallback(() => {
+    return Object.values(investments).some(amount => amount <= 0);
+  }, [investments]);
+
   // Handle investment amount change
   const handleInvestmentChange = (projectId: string, value: string) => {
     const numValue = parseFloat(value) || 0;
@@ -175,6 +179,22 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       return;
     }
 
+    // Check that all projects have > 0 investment
+    for (const [projectId, amount] of Object.entries(investments)) {
+      if (amount <= 0) {
+        setError(`每個專題都必須投資大於 0 元。專題 ${projectId} 的投資金額無效。`);
+        submittingRef.current = false;
+        return;
+      }
+    }
+
+    const totalInvested = Object.values(investments).reduce((a, b) => a + b, 0);
+    if (totalInvested <= 0) {
+      setError('投資總額不可為 0 元，請至少投資一個專題。');
+      submittingRef.current = false;
+      return;
+    }
+
     try {
       setSubmitMode(lockSubmission ? 'lock' : 'draft');
       setIsSubmitting(true);
@@ -192,10 +212,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       setError(null);
       await onSubmitted();
     } catch (err: unknown) {
-      const errorMsg = axios.isAxiosError(err)
-        ? (err.response?.data?.detail as string | undefined) || err.message
-        : '未知錯誤';
-      setError('提交投資失敗: ' + errorMsg);
+      setError('提交投資失敗。發生錯誤，請聯絡系統管理員');
       setSubmitMessage(null);
       console.error('Error submitting investment:', err);
     } finally {
@@ -246,7 +263,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
           const currentAmount = investments[project.id] || 0;
           const hasInvested = currentAmount > 0;
           return (
-            <div key={project.id} className="investment-item">
+            <div key={project.id} className={`investment-item ${hasInvested ? 'invested' : 'uninvested'}`}>
               <div className="project-header">
                 <label>{project.name}</label>
               </div>
@@ -320,8 +337,14 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
         </div>
 
         <div style={{ marginTop: 20 }}>
-          {!isLocked && (getTotalInvested() > TOTAL_BUDGET || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= TOTAL_BUDGET)) && (
+          {!isLocked && (getTotalInvested() > TOTAL_BUDGET || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= TOTAL_BUDGET) || hasZeroInvestment()) && (
             <div className="validation-message" style={{ marginBottom: 12 }}>
+              {getTotalInvested() === 0 ? (
+                <p>❌ 投資總額不可為 0 元，請至少投資一個專題。</p>
+              ) : null}
+              {hasZeroInvestment() && getTotalInvested() > 0 ? (
+                <p>❌ 每個專題都必須投資大於 0 元，請為所有專題分配投資。</p>
+              ) : null}
               {getTotalInvested() > TOTAL_BUDGET ? (
                 <p>❌ 預算超出上限：超過 <strong>${(getTotalInvested() - TOTAL_BUDGET).toLocaleString()}</strong> 元</p>
               ) : null}

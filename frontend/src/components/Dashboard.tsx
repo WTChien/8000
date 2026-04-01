@@ -95,8 +95,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
       setError(null);
       setLoading(false);
     } catch (err: unknown) {
-      const message = axios.isAxiosError(err) ? err.message : '未知錯誤';
-      setError('無法連接到伺服器: ' + message);
+      setError('發生錯誤，請聯絡系統管理員');
       console.error('Error fetching projects:', err);
       setLoading(false);
     }
@@ -258,9 +257,9 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
           <button
             className="presentation-exit-btn"
             onClick={() => onPresentationModeChange?.(false)}
-            title="退出演示"
+            title="關閉最終戰果"
           >
-            ✕ 退出演示
+            關閉最終戰果
           </button>
         </div>
 
@@ -399,7 +398,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
           onClick={() => onPresentationModeChange?.(true)}
           style={{ marginTop: 12 }}
         >
-          🎬 全屏投影演示
+          顯示最終戰果
         </button>
       </section>
 

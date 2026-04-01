@@ -144,6 +144,25 @@ interface VenueProjectsResponse {
 
 const normalizeDisplayName = (value: string): string => value.trim().replace(/\s+/g, ' ');
 const buildNameIdentifier = (displayName: string): string => `name::${displayName.toLowerCase()}`;
+const normalizeIdentifierForDisplay = (identifier: string): string => identifier.replace(/^name::/i, '');
+const formatMemberIdentity = (identifier: string, displayName: string): string => {
+  const shownIdentifier = normalizeIdentifierForDisplay(identifier).trim();
+  const shownName = displayName.trim();
+
+  if (!shownIdentifier) {
+    return shownName;
+  }
+  if (!shownName) {
+    return shownIdentifier;
+  }
+
+  // If identifier is the name-based key (name::xxx), avoid duplicate rendering like "gg-GG".
+  if (identifier.startsWith('name::') && shownIdentifier.toLowerCase() === shownName.toLowerCase()) {
+    return shownName;
+  }
+
+  return `${shownIdentifier}-${shownName}`;
+};
 const isAdminRole = (role?: Role | null): boolean => role === 'super_admin' || role === 'admin';
 const isSuperAdmin = (role?: Role | null): boolean => role === 'super_admin';
 const roleLabel = (role?: Role | null): string => {
@@ -224,6 +243,8 @@ function App() {
   const [isCreatingMember, setIsCreatingMember] = useState(false);
   const [memberEditManager, setMemberEditManager] = useState<Record<string, string>>({});
   const [memberSortTag, setMemberSortTag] = useState<MemberSortTag>('role');
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [groupImportPreview, setGroupImportPreview] = useState<string[]>([]);
 
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -254,9 +275,12 @@ function App() {
 
   const activeCampaign = adminSystemState.current_campaign ?? null;
   const adminHasActiveCampaign = Boolean(activeCampaign);
+  const isSuperAdminUser = isSuperAdmin(authUser?.role);
   const currentUserCampaignId = judgeStatus?.campaign_id || authUser?.campaign_id || null;
   const isJudgeCampaignActive = Boolean(currentUserCampaignId || inviteCampaign?.status === 'active');
   const isCampaignActive = isAdminRole(authUser?.role) ? adminHasActiveCampaign : isJudgeCampaignActive;
+  const canBrowseVenues = isCampaignActive || isSuperAdminUser;
+  const canManageVenues = isCampaignActive || isSuperAdminUser;
   const canStartAnotherCampaign = isSuperAdmin(authUser?.role) || !adminHasActiveCampaign;
   // Keep refs in sync so callbacks always read the latest values.
   selectedMemberCampaignIdRef.current = selectedMemberCampaignId;
@@ -410,9 +434,9 @@ function App() {
 
   const parseAxiosError = useCallback((err: unknown): string => {
     if (!axios.isAxiosError(err)) {
-      return '未知錯誤';
+      return '發生錯誤，請聯絡系統管理員';
     }
-    return ((err.response?.data as { detail?: string } | undefined)?.detail || err.message);
+    return '發生錯誤，請聯絡系統管理員';
   }, []);
 
   const loadVenues = useCallback(async (campaignId?: string) => {
@@ -525,7 +549,7 @@ function App() {
   }, [authHeaders, refreshJudgeStatus]);
 
   useEffect(() => {
-    if (isAdminRole(authUser?.role) && !isCampaignActive && currentView === 'lobby') {
+    if (isAdminRole(authUser?.role) && !isSuperAdmin(authUser?.role) && !isCampaignActive && currentView === 'lobby') {
       setCurrentView('admin');
     }
   }, [authUser?.role, currentView, isCampaignActive]);
@@ -563,24 +587,24 @@ function App() {
   }, []);
 
   const loginWithDisplayName = useCallback(async (rawName: string, showMessage = true): Promise<boolean> => {
-    const normalizedName = rawName.trim();
-    if (!normalizedName) {
+    const normalizedInput = rawName.trim();
+    if (!normalizedInput) {
       if (showMessage) {
-        setError('請輸入評審姓名');
+        setError('請輸入員編或姓名');
       }
       return false;
     }
 
     try {
       const response = await axios.post<AuthResponse>(`${API_BASE_URL}/api/judges/login`, {
-        display_name: normalizedName,
+        display_name: normalizedInput,
         invite_token: inviteTokenRef.current || undefined,
       });
       saveAuth(response.data, showMessage);
       return true;
     } catch (err: unknown) {
       if (showMessage) {
-        setError('登入失敗：' + parseAxiosError(err));
+        setError('登入失敗。' + parseAxiosError(err));
       }
       return false;
     }
@@ -882,6 +906,7 @@ function App() {
       setSetupVenueId(newVenue.id);
       setSetupVenueNameDraft(venueName);
       setSetupProjectDraft('');
+      setGroupImportPreview([]);
       setSetupSelectedMemberIds([]);
       setSetupNewMemberDraft('');
       setIsVenueSetupOpen(true);
@@ -903,9 +928,23 @@ function App() {
     setSetupVenueId(venueId);
     setSetupVenueNameDraft(venue?.classroom || venue?.name || '');
     setSetupProjectDraft(projectDraft);
+    setGroupImportPreview([]);
     setSetupSelectedMemberIds(selected);
     setSetupNewMemberDraft('');
     setIsVenueSetupOpen(true);
+  };
+
+  const parseGroupImportFile = async (file: File) => {
+    const text = await file.text();
+    const rows = Array.from(
+      new Set(
+        text
+          .split(/\r?\n|,|\t|;/)
+          .map((name) => normalizeDisplayName(name))
+          .filter(Boolean)
+      )
+    );
+    setGroupImportPreview(rows);
   };
 
   const openVenueView = useCallback(async (venueId: string) => {
@@ -1019,6 +1058,7 @@ function App() {
       setSetupVenueId('');
       setSetupVenueNameDraft('');
       setSetupProjectDraft('');
+      setGroupImportPreview([]);
       setSetupSelectedMemberIds([]);
       setSetupNewMemberDraft('');
       setMessage(`已完成會場設定`);
@@ -1456,8 +1496,8 @@ function App() {
         <h2>登入</h2>
         <p>
           {inviteCampaign
-            ? `你正在進入 ${inviteCampaign.year} 年 ${inviteCampaign.label} 專題會，請輸入姓名登入。`
-            : '請先輸入評審姓名，系統將以姓名建立本次登入身份。'}
+            ? `你正在進入 ${inviteCampaign.year} 年 ${inviteCampaign.label} 專題會，請輸入員編或姓名登入。`
+            : '請先輸入員編或姓名登入（帳號需由管理員事先匯入）。'}
         </p>
         {inviteCampaign && (
           <div className="invite-banner">
@@ -1468,12 +1508,12 @@ function App() {
 
       <section className="section judge-form">
         <div className="form-group">
-          <label>評審姓名</label>
+          <label>員編或姓名</label>
           <input
             className="investment-input"
             value={displayNameInput}
             onChange={(e) => setDisplayNameInput(e.target.value)}
-            placeholder="例如：王評審"
+            placeholder="例如：1234 或 王教授"
           />
         </div>
 
@@ -1494,7 +1534,7 @@ function App() {
       <section className="section">
         <h2>選擇專題發表廳</h2>
         <p>
-          {isCampaignActive
+          {canBrowseVenues
             ? '先看每個會場資訊再選擇加入，包含教室、評審評審與該會場專題組別。'
             : '目前尚未啟動專題會，尚無會場資料可選擇。'}
         </p>
@@ -1506,7 +1546,7 @@ function App() {
           <p><strong>{authUser?.display_name}</strong></p>
         </div>
 
-        {isCampaignActive && selectedVenue && (
+        {canBrowseVenues && selectedVenue && (
           <div className="investment-item">
             <h3 style={{ marginBottom: 8 }}>{selectedVenue.name}</h3>
             <p style={{ marginBottom: 8 }}>會場：<strong>{selectedVenue.classroom}</strong></p>
@@ -1523,7 +1563,7 @@ function App() {
           </div>
         )}
 
-        {isCampaignActive && <div className="lobby-grid">
+        {canBrowseVenues && <div className="lobby-grid">
           {venues.map((venue) => {
             const joinedVenueId = judgeStatus?.assigned_venue_id || authUser?.venue_id || null;
             const isLockedToAnotherVenue = Boolean(joinedVenueId && joinedVenueId !== venue.id);
@@ -1544,7 +1584,7 @@ function App() {
           })}
         </div>}
 
-        {isCampaignActive && <div className="nav-buttons" style={{ marginTop: 12 }}>
+        {canBrowseVenues && !isSuperAdminUser && <div className="nav-buttons" style={{ marginTop: 12 }}>
           {!judgeStatus?.assigned_venue_id && (
             <button className="active" onClick={joinVenue} disabled={isJoiningVenue}>
               {isJoiningVenue ? '加入中...' : '加入這個會場'}
@@ -1682,8 +1722,8 @@ function App() {
           <button
             className={adminTab === 'venues' ? 'active' : ''}
             onClick={() => setAdminTab('venues')}
-            disabled={!isCampaignActive}
-            title={isCampaignActive ? '管理會場與拖拉分派' : '請先啟動場次'}
+            disabled={!canManageVenues}
+            title={canManageVenues ? '管理會場與拖拉分派' : '請先啟動場次'}
           >
             會場管理
           </button>
@@ -1751,7 +1791,7 @@ function App() {
                           role="button"
                           tabIndex={0}
                         >
-                          <div className="member-name">{member.display_name}</div>
+                          <div className="member-name">{formatMemberIdentity(member.identifier, member.display_name)}</div>
                           <div className="venue-judge-meta">{member.role === 'admin' ? '系所管理者' : '評審'}</div>
                         </div>
                       ))}
@@ -1793,7 +1833,7 @@ function App() {
                         role="button"
                         tabIndex={0}
                       >
-                        <div className="member-name">{member.display_name}</div>
+                        <div className="member-name">{formatMemberIdentity(member.identifier, member.display_name)}</div>
                         <div className="venue-judge-meta">{member.role === 'admin' ? '系所管理者' : '評審'}</div>
                       </div>
                     ))}
@@ -1859,7 +1899,7 @@ function App() {
                     setIsEditingMember(false);
                   }}
                 >
-                  <span className="member-list-name">{member.display_name}</span>
+                  <span className="member-list-name">{formatMemberIdentity(member.identifier, member.display_name)}</span>
                   <span className="member-list-tags">
                     <span className="member-tag role">{member.role === 'admin' ? '系所管理者' : '評審'}</span>
                     <span className="member-tag campaign">{campaignTag}</span>
@@ -1891,7 +1931,7 @@ function App() {
                 value={newMemberRole}
                 onChange={(e) => setNewMemberRole(e.target.value as 'judge' | 'admin')}
               >
-                <option value="judge">評審</option>
+                <option value="judge">教授</option>
                 {isSuperAdmin(authUser?.role) && <option value="admin">系所管理者</option>}
               </select>
             )}
@@ -2008,8 +2048,8 @@ function App() {
               <h3>成員資料</h3>
               <div className="member-detail-info">
                 <div className="info-row">
-                  <label>姓名：</label>
-                  <span>{member.display_name}</span>
+                  <label>員編-姓名：</label>
+                  <span>{formatMemberIdentity(member.identifier, member.display_name)}</span>
                 </div>
                 <div className="info-row">
                   <label>角色：</label>
@@ -2055,7 +2095,7 @@ function App() {
                   </div>
                   {(memberEditRole[member.identifier] ?? member.role) === 'judge' && isSuperAdmin(authUser?.role) && (
                     <div className="form-group">
-                      <label>綁定管理者</label>
+                      <label>綁定管理者（員編-姓名）</label>
                       <select
                         className="investment-input"
                         value={memberEditManager[member.identifier] ?? member.manager_identifier ?? ''}
@@ -2066,7 +2106,7 @@ function App() {
                           .sort((a, b) => a.display_name.localeCompare(b.display_name, 'zh-Hant'))
                           .map((admin) => (
                             <option key={admin.identifier} value={admin.identifier}>
-                              {admin.display_name}
+                              {formatMemberIdentity(admin.identifier, admin.display_name)}
                             </option>
                           ))}
                       </select>
@@ -2122,11 +2162,15 @@ function App() {
         );
       })()}
 
-      {isCampaignActive && (
+      {canManageVenues && (
         <>
           {adminTab === 'venues' && <section className="section judge-form">
-            <h3>會場管理（僅在場次啟動後開放）</h3>
-            <p style={{ marginBottom: 12 }}>啟動後才需要處理會場、教室與各會場評審鎖定狀態。可直接拖拉評審卡片到對應會議廳。</p>
+            <h3>會場管理</h3>
+            <p style={{ marginBottom: 12 }}>
+              {isCampaignActive
+                ? '啟動後才需要處理會場、教室與各會場評審鎖定狀態。可直接拖拉評審卡片到對應會議廳。'
+                : '目前為 super_admin 預覽模式，可直接檢視會場管理介面與可拖拉區塊。'}
+            </p>
 
             <div className="form-group">
               <label>選擇場次</label>
@@ -2169,7 +2213,7 @@ function App() {
                     role="button"
                     tabIndex={0}
                   >
-                    <div className="member-name">{judge.display_name}</div>
+                    <div className="member-name">{formatMemberIdentity(judge.identifier, judge.display_name)}</div>
                     <div className="venue-judge-meta">
                       {assigningMemberId === judge.identifier ? (
                         <span className="venue-loading-inline">
@@ -2222,7 +2266,7 @@ function App() {
                           role="button"
                           tabIndex={0}
                         >
-                          <div className="member-name">{judge.display_name}</div>
+                          <div className="member-name">{formatMemberIdentity(judge.identifier, judge.display_name)}</div>
                           <div className="venue-judge-meta">
                             {assigningMemberId === judge.identifier ? (
                               <span className="venue-loading-inline">
@@ -2271,7 +2315,7 @@ function App() {
                       role="button"
                       tabIndex={0}
                     >
-                      <div className="member-name">{judge.display_name}</div>
+                      <div className="member-name">{formatMemberIdentity(judge.identifier, judge.display_name)}</div>
                       <div className="venue-judge-meta">
                         {assigningMemberId === judge.identifier ? (
                           <span className="venue-loading-inline">
@@ -2394,7 +2438,7 @@ function App() {
                     venueJudges.map((member) => (
                       <div key={member.identifier} className={`venue-member-badge ${member.is_voted ? 'locked' : 'editable'}`}>
                         <span className="venue-member-dot" />
-                        <span className="venue-member-name">{member.display_name}</span>
+                        <span className="venue-member-name">{formatMemberIdentity(member.identifier, member.display_name)}</span>
                         <span className="venue-member-status">{member.is_voted ? '已鎖定' : '可編輯'}</span>
                         {member.is_voted && (
                           <div className="venue-member-btns">
@@ -2454,6 +2498,65 @@ function App() {
                 onChange={(e) => setSetupProjectDraft(e.target.value)}
                 placeholder={'例如：\n智慧製造組\n互動媒體組\n資料科學組'}
               />
+              <div className="input-group" style={{ marginTop: 10 }}>
+                <input
+                  type="file"
+                  className="investment-input"
+                  accept=".csv,.txt"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) {
+                      return;
+                    }
+                    try {
+                      await parseGroupImportFile(file);
+                      setMessage('已載入匯入檔，請先確認清單內容');
+                    } catch {
+                      setError('匯入檔解析失敗。發生錯誤，請聯絡系統管理員');
+                    }
+                  }}
+                />
+              </div>
+
+              {groupImportPreview.length > 0 && (
+                <div className="investment-item" style={{ marginTop: 10 }}>
+                  <h3 style={{ fontSize: 18, marginBottom: 8 }}>匯入預覽</h3>
+                  <div className="lobby-tags" style={{ marginBottom: 10 }}>
+                    {groupImportPreview.map((group) => (
+                      <span key={`preview-${group}`} className="lobby-tag">{group}</span>
+                    ))}
+                  </div>
+                  <div className="admin-modal-actions" style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const merged = Array.from(
+                          new Set(
+                            [...setupProjectDraft.split(/\n+/), ...groupImportPreview]
+                              .map((name) => normalizeDisplayName(name))
+                              .filter(Boolean)
+                          )
+                        );
+                        setSetupProjectDraft(merged.join('\n'));
+                        setGroupImportPreview([]);
+                        setMessage('已確認匯入資料');
+                      }}
+                    >
+                      確認
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('是否刪除此一匯入資料？')) {
+                          setGroupImportPreview([]);
+                        }
+                      }}
+                    >
+                      刪除
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="form-group">
@@ -2474,7 +2577,7 @@ function App() {
                       .filter((m) => !m.assigned_venue_id)
                       .map((m) => (
                         <option key={m.identifier} value={m.identifier}>
-                          {m.display_name}{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
+                          {formatMemberIdentity(m.identifier, m.display_name)}{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
                         </option>
                       ))}
                   </optgroup>
@@ -2485,7 +2588,7 @@ function App() {
                       .filter((m) => m.assigned_venue_id && m.assigned_venue_id !== setupVenueId)
                       .map((m) => (
                         <option key={m.identifier} value={m.identifier}>
-                          {m.display_name}（目前：{m.assigned_venue_id}）{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
+                          {formatMemberIdentity(m.identifier, m.display_name)}（目前：{m.assigned_venue_id}）{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
                         </option>
                       ))}
                   </optgroup>
@@ -2496,7 +2599,7 @@ function App() {
                       .filter((m) => m.assigned_venue_id === setupVenueId)
                       .map((m) => (
                         <option key={m.identifier} value={m.identifier}>
-                          {m.display_name}（此會場）{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
+                          {formatMemberIdentity(m.identifier, m.display_name)}（此會場）{setupSelectedMemberIds.includes(m.identifier) ? ' ✓' : ''}
                         </option>
                       ))}
                   </optgroup>
@@ -2512,7 +2615,7 @@ function App() {
                     const m = judgeMembers.find((mem) => mem.identifier === id);
                     return (
                       <span key={id} className="setup-member-chip">
-                        {m?.display_name || id}
+                        {m ? formatMemberIdentity(m.identifier, m.display_name) : id}
                         <button
                           type="button"
                           onClick={() => setSetupSelectedMemberIds((prev) => prev.filter((x) => x !== id))}
@@ -2544,6 +2647,7 @@ function App() {
                   setSetupVenueNameDraft('');
                   setSetupProjectDraft('');
                   setSetupSelectedMemberIds([]);
+                  setGroupImportPreview([]);
                   setSetupNewMemberDraft('');
                 }}
                 disabled={isSavingVenueSetup}
@@ -2778,76 +2882,109 @@ function App() {
   );
 
   const hasVenue = Boolean(authUser?.venue_id);
-  const canSeeDashboard = isCampaignActive && Boolean(dashboardVenueId);
+  const effectiveVenueId = authUser?.venue_id || selectedVenueId || dashboardVenueId || venues[0]?.id || '';
+  const canSeeDashboard = (isCampaignActive || isSuperAdminUser) && Boolean(dashboardVenueId || venues[0]?.id);
   const joinedVenueId = judgeStatus?.assigned_venue_id || authUser?.venue_id || null;
 
   return (
     <div className="app-container">
-      {!isPresentationMode && (
-        <div className="navigation">
+      <div className="navigation">
+        <div className="navigation-top-row">
           <h1>FundThePitch - 專題模擬投資評分系統</h1>
           {authUser && (
-            <div className="nav-buttons">
+            <button
+              className="nav-toggle"
+              type="button"
+              onClick={() => setIsMobileNavOpen((prev) => !prev)}
+              aria-expanded={isMobileNavOpen}
+              aria-label="切換導覽列"
+            >
+              {isMobileNavOpen ? '收合選單' : '展開選單'}
+            </button>
+          )}
+        </div>
+        {authUser && (
+          <div className={`nav-buttons ${isMobileNavOpen ? 'open' : ''}`}>
               {isAdminRole(authUser.role) && (
                 <button
-                  onClick={() => setCurrentView('admin')}
+                  onClick={() => {
+                    setCurrentView('admin');
+                    setIsMobileNavOpen(false);
+                  }}
                   className={currentView === 'admin' ? 'active' : ''}
                 >
                   管理員
                 </button>
               )}
               <button
-                disabled={!isCampaignActive}
-                onClick={() => setCurrentView('lobby')}
+                disabled={!isCampaignActive && !isSuperAdminUser}
+                onClick={() => {
+                  setCurrentView('lobby');
+                  setIsMobileNavOpen(false);
+                }}
                 className={currentView === 'lobby' ? 'active' : ''}
               >
                 會場選擇
               </button>
               <button
-                disabled={!isCampaignActive || !hasVenue}
-                onClick={() => setCurrentView('judge')}
+                disabled={(!isCampaignActive || !hasVenue) && !isSuperAdminUser}
+                onClick={() => {
+                  setCurrentView('judge');
+                  setIsMobileNavOpen(false);
+                }}
                 className={currentView === 'judge' ? 'active' : ''}
               >
                 評審投資
               </button>
               <button
-                disabled={!isCampaignActive}
-                onClick={() => setCurrentView('dashboard')}
+                disabled={!isCampaignActive && !isSuperAdminUser}
+                onClick={() => {
+                  setCurrentView('dashboard');
+                  setIsMobileNavOpen(false);
+                }}
                 className={currentView === 'dashboard' ? 'active' : ''}
               >
                 會場投資戰況
               </button>
               <button onClick={logout} disabled={isLoggingOut}>{isLoggingOut ? '登出中...' : '登出'}</button>
-            </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
-      <div className={isPresentationMode ? "content-presentation" : "content"}>
-        {!isPresentationMode && error && <div className="error-message">{error}</div>}
-        {!isPresentationMode && message && <div className="success-message">{message}</div>}
+      <div className="content">
+        {error && <div className="error-message">{error || '發生錯誤，請聯絡系統管理員'}</div>}
+        {message && <div className="success-message">{message}</div>}
 
         {!authUser && renderLogin()}
 
         {authUser && currentView === 'lobby' && renderLobby()}
 
-        {authUser && currentView === 'judge' && authToken && hasVenue && isCampaignActive && (
+        {authUser && currentView === 'judge' && authToken && ((hasVenue && isCampaignActive) || (isSuperAdminUser && Boolean(effectiveVenueId))) && (
           <JudgeUI
             authToken={authToken}
             authUser={authUser}
-            venueId={authUser.venue_id as string}
-            venueName={venues.find((v) => v.id === authUser.venue_id)?.name}
-            isLocked={Boolean(judgeStatus?.is_voted)}
-            onLeaveVenue={leaveVenue}
+            venueId={effectiveVenueId}
+            venueName={venues.find((v) => v.id === effectiveVenueId)?.name}
+            isLocked={isSuperAdminUser ? true : Boolean(judgeStatus?.is_voted)}
+            onLeaveVenue={isSuperAdminUser ? (async () => Promise.resolve()) : leaveVenue}
             onSubmitted={refreshJudgeStatus}
           />
         )}
 
-        {authUser && currentView === 'judge' && !isCampaignActive && (
+        {authUser && currentView === 'judge' && !isCampaignActive && !isSuperAdminUser && (
           <div className="container" style={{ maxWidth: 920 }}>
             <section className="section">
               <h3>評審投資</h3>
               <p>目前尚未啟動專題會，暫無投資與會場資料。</p>
+            </section>
+          </div>
+        )}
+
+        {authUser && currentView === 'judge' && isSuperAdminUser && !effectiveVenueId && (
+          <div className="container" style={{ maxWidth: 920 }}>
+            <section className="section">
+              <h3>評審投資（super_admin 預覽）</h3>
+              <p>目前尚無可預覽的會場，請先新增會場後即可檢視評審介面。</p>
             </section>
           </div>
         )}

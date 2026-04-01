@@ -1696,8 +1696,9 @@ def get_campaign_invite_info(invite_token: str):
 
 @app.post("/api/judges/login", response_model=AuthResponse)
 def login_with_name(data: NameLoginRequest):
-    display_name = normalize_display_name(data.display_name)
-    identifier = build_name_identifier(display_name)
+    raw_login_key = data.display_name.strip()
+    if not raw_login_key:
+        raise HTTPException(status_code=400, detail="請輸入員編或姓名")
     # If the user arrived via an invite link, scope them to that specific campaign.
     if data.invite_token:
         invited = find_campaign_by_invite_token(data.invite_token.strip())
@@ -1710,12 +1711,30 @@ def login_with_name(data: NameLoginRequest):
     else:
         scope_year = get_member_scope_year()
         scope_campaign_id = get_member_scope_campaign_id()
-    existing = get_verified_user_with_fallback(
-        identifier,
+
+    # Allow login key to be either employee-id style identifier or display name.
+    by_identifier = get_verified_user_with_fallback(
+        raw_login_key,
         campaign_year=scope_year,
         campaign_id=scope_campaign_id,
         allow_legacy=True,
     )
+    display_name = normalize_display_name(raw_login_key)
+    by_name_identifier = build_name_identifier(display_name)
+    by_name = get_verified_user_with_fallback(
+        by_name_identifier,
+        campaign_year=scope_year,
+        campaign_id=scope_campaign_id,
+        allow_legacy=True,
+    )
+
+    existing = by_identifier or by_name
+    if not existing:
+        raise HTTPException(status_code=404, detail="帳號不存在，請先由管理員匯入")
+
+    identifier = str(existing.get("identifier", "")).strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="帳號資料異常，請聯絡系統管理員")
 
     role = normalize_role(existing.get("role") if existing else "judge")
     is_global = role in {"super_admin", "admin"}
@@ -1911,13 +1930,19 @@ def submit_investment(
     venue_id: Optional[str] = None
 
     for project_id, amount in data.investments.items():
-        if amount < 0:
+        if amount <= 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"投資金額不可小於 0。專題 {project_id} 的金額為 {amount}",
+                detail=f"每個專題都必須投資大於 0 元。專題 {project_id} 的投資金額無效",
             )
 
     total_investment = sum(data.investments.values())
+    if total_investment <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="投資總額不可為 0 元",
+        )
+
     if total_investment > total_budget:
         raise HTTPException(
             status_code=400,
