@@ -198,7 +198,7 @@ function App() {
     campaigns_by_year: {},
     recently_deleted_by_year: {}
   });
-  const [adminTab, setAdminTab] = useState<AdminTab>('campaigns');
+  const [adminTab, setAdminTab] = useState<AdminTab>('members');
   const [memberEditName, setMemberEditName] = useState<Record<string, string>>({});
   const [memberEditRole, setMemberEditRole] = useState<Record<string, Role>>({});
   const [setupVenueNameDraft, setSetupVenueNameDraft] = useState('');
@@ -799,7 +799,7 @@ function App() {
         if (activeId) {
           setSelectedMemberCampaignId(activeId);
         }
-        setAdminTab((prev) => (prev === 'archives' ? prev : 'campaigns'));
+        setAdminTab((prev) => (prev === 'archives' ? prev : 'members'));
       } else {
         if (!selectedMemberCampaignIdRef.current) {
           const fallbackCampaign = [...(normalizedState.active_campaigns_list ?? []), ...Object.values(normalizedState.campaigns_by_year)
@@ -809,7 +809,7 @@ function App() {
             setSelectedMemberCampaignId(fallbackCampaign.id);
           }
         }
-        setAdminTab((prev) => (prev === 'archives' ? prev : 'campaigns'));
+        setAdminTab((prev) => (prev === 'archives' ? prev : 'members'));
       }
       return normalizedState;
     } catch (err: unknown) {
@@ -1714,10 +1714,10 @@ function App() {
       <div className="section admin-tab-strip">
         <div className="nav-buttons admin-tabs">
           <button
-            className={adminTab === 'campaigns' ? 'active' : ''}
-            onClick={() => setAdminTab('campaigns')}
+            className={adminTab === 'members' ? 'active' : ''}
+            onClick={() => setAdminTab('members')}
           >
-            場次管理
+            成員管理
           </button>
           <button
             className={adminTab === 'venues' ? 'active' : ''}
@@ -1728,10 +1728,10 @@ function App() {
             會場管理
           </button>
           <button
-            className={adminTab === 'members' ? 'active' : ''}
-            onClick={() => setAdminTab('members')}
+            className={adminTab === 'campaigns' ? 'active' : ''}
+            onClick={() => setAdminTab('campaigns')}
           >
-            成員管理
+            場次管理
           </button>
           <button
             className={adminTab === 'archives' ? 'active' : ''}
@@ -1884,6 +1884,7 @@ function App() {
             {sortedMembersByTag.map((member, idx) => {
               const campaignId = member.role === 'admin' ? member.managed_campaign_id : member.campaign_id;
               const campaignInfo = campaignOptions.find((campaign) => campaign.id === campaignId);
+              const isAdminMember = member.role === 'admin';
               const campaignTag = campaignInfo
                 ? `${campaignInfo.year} / ${campaignInfo.label}`
                 : (campaignId || '未分配場次');
@@ -1901,9 +1902,13 @@ function App() {
                 >
                   <span className="member-list-name">{formatMemberIdentity(member.identifier, member.display_name)}</span>
                   <span className="member-list-tags">
-                    <span className="member-tag role">{member.role === 'admin' ? '系所管理者' : '評審'}</span>
-                    <span className="member-tag campaign">{campaignTag}</span>
-                    <span className="member-tag venue">{venueTag}</span>
+                    <span className="member-tag role">{isAdminMember ? '系所管理者' : '評審'}</span>
+                    {!(isAdminMember && campaignTag === '未分配場次') && (
+                      <span className="member-tag campaign">{campaignTag}</span>
+                    )}
+                    {!isAdminMember && (
+                      <span className="member-tag venue">{venueTag}</span>
+                    )}
                     <span className={`member-tag lock ${member.is_voted ? 'locked' : 'editable'}`}>{lockTag}</span>
                   </span>
                 </button>
@@ -2172,33 +2177,35 @@ function App() {
                 : '目前為 super_admin 預覽模式，可直接檢視會場管理介面與可拖拉區塊。'}
             </p>
 
-            <div className="form-group">
-              <label>選擇場次</label>
-              <div className="input-group">
-                <select
-                  className="investment-input"
-                  value={selectedMemberCampaignId}
-                  onChange={(e) => setSelectedMemberCampaignId(e.target.value)}
-                >
-                  {venueCampaignOptions.length === 0 && <option value="">尚無進行中場次</option>}
-                  {venueCampaignOptions.map((campaign) => (
-                    <option key={`venue-campaign-${campaign.id}`} value={campaign.id}>
-                      {campaign.year} / {campaign.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => {
-                    if (!selectedMemberCampaignId) return;
-                    loadMembers(selectedMemberCampaignId);
-                    loadVenues(selectedMemberCampaignId);
-                  }}
-                  disabled={!selectedMemberCampaignId || isLoadingMembers}
-                >
-                  {isLoadingMembers ? '讀取中...' : '套用場次'}
-                </button>
+            {isSuperAdmin(authUser?.role) && (
+              <div className="form-group">
+                <label>選擇場次</label>
+                <div className="input-group">
+                  <select
+                    className="investment-input"
+                    value={selectedMemberCampaignId}
+                    onChange={(e) => setSelectedMemberCampaignId(e.target.value)}
+                  >
+                    {venueCampaignOptions.length === 0 && <option value="">尚無進行中場次</option>}
+                    {venueCampaignOptions.map((campaign) => (
+                      <option key={`venue-campaign-${campaign.id}`} value={campaign.id}>
+                        {campaign.year} / {campaign.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      if (!selectedMemberCampaignId) return;
+                      loadMembers(selectedMemberCampaignId);
+                      loadVenues(selectedMemberCampaignId);
+                    }}
+                    disabled={!selectedMemberCampaignId || isLoadingMembers}
+                  >
+                    {isLoadingMembers ? '讀取中...' : '套用場次'}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="form-group">
               <label>尚未分派會場的評審（可拖拉到下方會議廳）</label>

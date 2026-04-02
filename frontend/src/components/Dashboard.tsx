@@ -232,164 +232,134 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
     );
   }
 
-  if (isPresentationMode) {
-    // Track which ranks have been revealed (sortedProjects is sorted ascending: last→1st)
-    const revealedSet = new Set(
-      sortedProjects.slice(0, revealedCount).map((p) => p.rank)
-    );
-
-    // Podium layout: 2nd (left) · 1st (centre, tallest) · 3rd (right)
-    const podiumSlots = [
-      { rank: 2, icon: '🥈', colorClass: 'rank-2' },
-      { rank: 1, icon: '🥇', colorClass: 'rank-1' },
-      { rank: 3, icon: '🥉', colorClass: 'rank-3' },
-    ];
-
-    // Below-podium listings: rank 4 at top, last place at bottom
-    const belowPodiumProjects = sortedProjects
-      .filter((p) => p.rank > 3)
-      .sort((a, b) => a.rank - b.rank);
-
-    return (
-      <div className="dashboard-presentation">
-        <div className="presentation-header">
-          <h1>{venueName || venueId} – 成果發表戰況</h1>
-          <button
-            className="presentation-exit-btn"
-            onClick={() => onPresentationModeChange?.(false)}
-            title="關閉最終戰果"
-          >
-            關閉最終戰果
-          </button>
-        </div>
-
-        <div className="ranking-controls">
-          <button
-            className="ranking-btn"
-            onClick={() => setRevealedCount(sortedProjects.length)}
-          >
-            📊 一次公布所有結果
-          </button>
-          <button
-            className={`ranking-btn ${isAutoReveal ? 'active' : ''}`}
-            onClick={() => setIsAutoReveal(!isAutoReveal)}
-          >
-            {isAutoReveal ? '⏸ 暫停' : '▶ 逐個揭曉排名'}
-          </button>
-          {revealedCount < sortedProjects.length && !isAutoReveal && (
-            <button
-              className="ranking-btn next-btn"
-              onClick={() => setRevealedCount((prev) => Math.min(prev + 1, sortedProjects.length))}
-            >
-              ⏭ 下一個
-            </button>
-          )}
-        </div>
-
-        <div className="podium-area">
-          {/* Podium stage: 2nd (left) · 1st (centre, tallest) · 3rd (right) */}
-          <div className="podium-stage">
-            {podiumSlots.map(({ rank, icon, colorClass }) => {
-              const project = sortedProjects.find((p) => p.rank === rank);
-              const isRevealed = !!project && revealedSet.has(rank);
-              return (
-                <div
-                  key={rank}
-                  className={`podium-column ${colorClass}${isRevealed ? ' revealed' : ''}${!project ? ' empty' : ''}`}
-                >
-                  {rank === 1 && isRevealed && project && (
-                    <div className="podium-confetti-burst" aria-hidden="true">
-                      <div className="confetti-origin confetti-origin-left">
-                        <span className="confetti-piece piece-1" />
-                        <span className="confetti-piece piece-2" />
-                        <span className="confetti-piece piece-3" />
-                        <span className="confetti-piece piece-4" />
-                        <span className="confetti-piece piece-5" />
-                        <span className="confetti-piece piece-6" />
-                        <span className="confetti-piece piece-7" />
-                        <span className="confetti-piece piece-8" />
-                      </div>
-                      <div className="confetti-origin confetti-origin-right">
-                        <span className="confetti-piece piece-1" />
-                        <span className="confetti-piece piece-2" />
-                        <span className="confetti-piece piece-3" />
-                        <span className="confetti-piece piece-4" />
-                        <span className="confetti-piece piece-5" />
-                        <span className="confetti-piece piece-6" />
-                        <span className="confetti-piece piece-7" />
-                        <span className="confetti-piece piece-8" />
-                      </div>
-                    </div>
-                  )}
-                  <div className="podium-info">
-                    {isRevealed && project ? (
-                      <>
-                        <div className="podium-project-name">{project.name}</div>
-                        <div className="podium-project-amount">
-                          ${project.total_investment.toLocaleString()}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="podium-project-name podium-placeholder">？？？</div>
-                        <div className="podium-project-amount podium-placeholder">—</div>
-                      </>
-                    )}
-                  </div>
-                  <div className={`podium-block ${colorClass}`}>
-                    <span className="podium-rank-label">{icon} 第 {rank} 名</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Below-podium list: rank 4 at top → last place at bottom */}
-          {belowPodiumProjects.length > 0 && (
-            <div className="below-podium-zone">
-              {belowPodiumProjects.map((project) => {
-                const isRevealed = revealedSet.has(project.rank);
-                return (
-                  <div
-                    key={project.id}
-                    className={`below-podium-item${isRevealed ? ' revealed' : ''}`}
-                  >
-                    <span className="bp-rank">第 {project.rank} 名</span>
-                    <span className="bp-name">
-                      {isRevealed ? project.name : '？？？'}
-                    </span>
-                    <span className="bp-amount">
-                      {isRevealed ? `$${project.total_investment.toLocaleString()}` : '—'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="presentation-footer">
-          <div className="footer-stat">
-            <span className="footer-label">總投資金額</span>
-            <span className="footer-value">${totalInvested.toLocaleString()}</span>
-          </div>
-          <div className="footer-stat">
-            <span className="footer-label">已投資專題</span>
-            <span className="footer-value">
-              {projects.filter((p) => p.total_investment > 0).length} / {projects.length}
-            </span>
-          </div>
-          <div className="footer-stat">
-            <span className="footer-label">最後更新</span>
-            <span className="footer-value">{lastUpdated.toLocaleTimeString('zh-Hant-TW')}</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Presentation modal data
+  const revealedSet = new Set(
+    sortedProjects.slice(0, revealedCount).map((p) => p.rank)
+  );
+  const podiumSlots = [
+    { rank: 2, icon: '🥈', colorClass: 'rank-2' },
+    { rank: 1, icon: '🥇', colorClass: 'rank-1' },
+    { rank: 3, icon: '🥉', colorClass: 'rank-3' },
+  ];
+  const belowPodiumProjects = sortedProjects
+    .filter((p) => p.rank > 3)
+    .sort((a, b) => a.rank - b.rank);
 
   return (
-    <div className="dashboard container">
+    <>
+      {isPresentationMode && (
+        <div className="presentation-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="presentation-modal">
+            <div className="presentation-header">
+              <h1>{venueName || venueId} – 成果發表戰況</h1>
+              <button
+                className="presentation-exit-btn"
+                onClick={() => onPresentationModeChange?.(false)}
+                title="關閉最終戰果"
+              >
+                ✕ 關閉最終戰果
+              </button>
+            </div>
+
+            <div className="ranking-controls">
+              <button
+                className="ranking-btn"
+                onClick={() => setRevealedCount(sortedProjects.length)}
+              >
+                📊 一次公布所有結果
+              </button>
+              <button
+                className={`ranking-btn ${isAutoReveal ? 'active' : ''}`}
+                onClick={() => setIsAutoReveal(!isAutoReveal)}
+              >
+                {isAutoReveal ? '⏸ 暫停' : '▶ 逐個揭曉排名'}
+              </button>
+              {revealedCount < sortedProjects.length && !isAutoReveal && (
+                <button
+                  className="ranking-btn next-btn"
+                  onClick={() => setRevealedCount((prev) => Math.min(prev + 1, sortedProjects.length))}
+                >
+                  ⏭ 下一個
+                </button>
+              )}
+            </div>
+
+            <div className="podium-area">
+              <div className="podium-stage">
+                {podiumSlots.map(({ rank, icon, colorClass }) => {
+                  const project = sortedProjects.find((p) => p.rank === rank);
+                  const isRevealed = !!project && revealedSet.has(rank);
+                  return (
+                    <div
+                      key={rank}
+                      className={`podium-column ${colorClass}${isRevealed ? ' revealed' : ''}${!project ? ' empty' : ''}`}
+                    >
+                      <div className="podium-info">
+                        {isRevealed && project ? (
+                          <>
+                            <div className="podium-project-name">{project.name}</div>
+                            <div className="podium-project-amount">
+                              ${project.total_investment.toLocaleString()}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="podium-project-name podium-placeholder">？？？</div>
+                            <div className="podium-project-amount podium-placeholder">—</div>
+                          </>
+                        )}
+                      </div>
+                      <div className={`podium-block ${colorClass}`}>
+                        <span className="podium-rank-label">{icon} 第 {rank} 名</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {belowPodiumProjects.length > 0 && (
+                <div className="below-podium-zone">
+                  {belowPodiumProjects.map((project) => {
+                    const isRevealed = revealedSet.has(project.rank);
+                    return (
+                      <div
+                        key={project.id}
+                        className={`below-podium-item${isRevealed ? ' revealed' : ''}`}
+                      >
+                        <span className="bp-rank">第 {project.rank} 名</span>
+                        <span className="bp-name">
+                          {isRevealed ? project.name : '？？？'}
+                        </span>
+                        <span className="bp-amount">
+                          {isRevealed ? `$${project.total_investment.toLocaleString()}` : '—'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="presentation-footer">
+              <div className="footer-stat">
+                <span className="footer-label">總投資金額</span>
+                <span className="footer-value">${totalInvested.toLocaleString()}</span>
+              </div>
+              <div className="footer-stat">
+                <span className="footer-label">已投資專題</span>
+                <span className="footer-value">
+                  {projects.filter((p) => p.total_investment > 0).length} / {projects.length}
+                </span>
+              </div>
+              <div className="footer-stat">
+                <span className="footer-label">最後更新</span>
+                <span className="footer-value">{lastUpdated.toLocaleTimeString('zh-Hant-TW')}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="dashboard container">
       <section className="section dashboard-header">
         <h2>{venueName || venueId} - 成果發表戰況</h2>
         <p>最終送出後排名即時更新，準備迎接開獎時刻</p>
@@ -435,14 +405,16 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
           </div>
         )}
         <ResponsiveContainer width="100%" height={400}>
-          <BarChart data={stackedChartData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+          <BarChart data={stackedChartData} margin={{ top: 20, right: 30, left: 20, bottom: 44 }} barCategoryGap="40%">
             <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
             <XAxis 
               dataKey="name" 
-              angle={-45}
-              textAnchor="end"
-              height={100}
-              tick={{ fontSize: 12 }}
+              angle={0}
+              textAnchor="middle"
+              height={72}
+              tickMargin={10}
+              interval={0}
+              tick={{ fontSize: 16, fontWeight: 800, fontStyle: 'normal', fill: '#334155' }}
             />
             <YAxis 
               label={{ value: '投資金額 (元)', angle: -90, position: 'insideLeft' }}
@@ -456,6 +428,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                   dataKey={judge.identifier}
                   name={judge.display_name}
                   stackId="judge"
+                  maxBarSize={44}
                   radius={index === judgeInvestments.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}
                   fill={getJudgeColor(index)}
                   animationDuration={300}
@@ -465,6 +438,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
             ) : (
               <Bar 
                 dataKey="value" 
+                maxBarSize={44}
                 radius={[8, 8, 0, 0]}
                 animationDuration={300}
                 isAnimationActive={true}
@@ -541,6 +515,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
         </table>
       </section>
     </div>
+    </>
   );
 }
 
