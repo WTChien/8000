@@ -22,12 +22,17 @@ echo ""
 # Start backend
 echo -e "${GREEN}1️⃣ 啟動後端服務器...${NC}"
 cd backend
-if ! command -v python3 &> /dev/null; then
-    echo "❌ 錯誤：找不到 Python3，請確保已安裝 Python"
+BACKEND_PYTHON="python3"
+if [ -x "../.venv/bin/python" ]; then
+    BACKEND_PYTHON="../.venv/bin/python"
+fi
+
+if ! command -v "$BACKEND_PYTHON" &> /dev/null; then
+    echo "❌ 錯誤：找不到可用的 Python，請確認 .venv 或系統 Python3"
     exit 1
 fi
 
-python3 main.py &
+"$BACKEND_PYTHON" main.py &
 BACKEND_PID=$!
 echo -e "${GREEN}✅ 後端服務器啟動 (PID: $BACKEND_PID)${NC}"
 echo "   URL: http://localhost:9000"

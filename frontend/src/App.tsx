@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { QRCodeCanvas } from 'qrcode.react';
+import * as XLSX from 'xlsx';
 import JudgeUI from './components/JudgeUI';
 import Dashboard from './components/Dashboard';
 
 type ViewMode = 'lobby' | 'judge' | 'dashboard' | 'admin';
-type AdminTab = 'campaigns' | 'venues' | 'members' | 'archives';
+type AdminTab = 'campaigns' | 'venues' | 'members' | 'archives' | 'deleted';
 type MemberSortTag = 'role' | 'campaign' | 'venue' | 'lock';
 
 type Role = 'super_admin' | 'admin' | 'judge';
@@ -142,6 +143,11 @@ interface VenueProjectsResponse {
   remaining_budget: number;
 }
 
+interface ImportStatus {
+  tone: 'idle' | 'loading' | 'success' | 'error';
+  text: string;
+}
+
 const normalizeDisplayName = (value: string): string => value.trim().replace(/\s+/g, ' ');
 const buildNameIdentifier = (displayName: string): string => `name::${displayName.toLowerCase()}`;
 const normalizeIdentifierForDisplay = (identifier: string): string => identifier.replace(/^name::/i, '');
@@ -199,6 +205,12 @@ function App() {
     recently_deleted_by_year: {}
   });
   const [adminTab, setAdminTab] = useState<AdminTab>('members');
+  const [isHeroPanelOpen, setIsHeroPanelOpen] = useState(true);
+  const [isBulkImporting, setIsBulkImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState<ImportStatus>({
+    tone: 'idle',
+    text: '請先下載範本，填寫後再上傳。'
+  });
   const [memberEditName, setMemberEditName] = useState<Record<string, string>>({});
   const [memberEditRole, setMemberEditRole] = useState<Record<string, Role>>({});
   const [setupVenueNameDraft, setSetupVenueNameDraft] = useState('');
@@ -210,6 +222,7 @@ function App() {
   const [isSavingVenueSetup, setIsSavingVenueSetup] = useState(false);
   const [pendingArchiveDelete, setPendingArchiveDelete] = useState<SystemCampaign | null>(null);
   const [isDeletingArchive, setIsDeletingArchive] = useState(false);
+  const [downloadingReportCampaignId, setDownloadingReportCampaignId] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isJoiningVenue, setIsJoiningVenue] = useState(false);
   const [isLeavingVenue, setIsLeavingVenue] = useState(false);
@@ -224,6 +237,7 @@ function App() {
   const [restoringCampaignId, setRestoringCampaignId] = useState<string | null>(null);
   const [permanentDeletingCampaignId, setPermanentDeletingCampaignId] = useState<string | null>(null);
   const [pendingPermanentDelete, setPendingPermanentDelete] = useState<RecentlyDeletedCampaign | null>(null);
+  const [pendingMemberDelete, setPendingMemberDelete] = useState<AdminMember | null>(null);
   const [viewVenueId, setViewVenueId] = useState<string | null>(null);
   const [qrInviteCampaign, setQrInviteCampaign] = useState<SystemCampaign | null>(null);
   const [venueViewProjects, setVenueViewProjects] = useState<VenueProject[]>([]);
@@ -244,8 +258,7 @@ function App() {
   const [memberEditManager, setMemberEditManager] = useState<Record<string, string>>({});
   const [memberSortTag, setMemberSortTag] = useState<MemberSortTag>('role');
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
-  const [groupImportPreview, setGroupImportPreview] = useState<string[]>([]);
-
+  const [isAdminTabsOpen, setIsAdminTabsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -258,6 +271,8 @@ function App() {
   const selectedMemberCampaignIdRef = useRef<string>('');
   const activeCampaignIdRef = useRef<string | undefined>(undefined);
   const isCampaignActiveRef = useRef<boolean>(false);
+  const adminMembersSectionRef = useRef<HTMLElement | null>(null);
+  const adminVenuesSectionRef = useRef<HTMLElement | null>(null);
   const userCampaignIdRef = useRef<string | undefined>(undefined);
   const inviteTokenRef = useRef<string | null>(null);
 
@@ -388,21 +403,42 @@ function App() {
   }, [members]);
 
   const venueMemberStats = useMemo(() => {
-    const stats: Record<string, { managers: number; judges: number }> = {};
+    const stats: Record<string, number> = {};
     venues.forEach((venue) => {
-      const judges = venueJudgeGroups[venue.id] || [];
-      const managerSet = new Set(
-        judges
-          .map((judge) => judge.manager_identifier || '')
-          .filter((identifier) => Boolean(identifier))
-      );
-      stats[venue.id] = {
-        managers: managerSet.size,
-        judges: judges.length,
-      };
+      stats[venue.id] = (venueJudgeGroups[venue.id] || []).length;
     });
     return stats;
   }, [venues, venueJudgeGroups]);
+
+  const memberSortChoices = useMemo<MemberSortTag[]>(() => {
+    if (isSuperAdmin(authUser?.role)) {
+      return ['role', 'campaign', 'venue', 'lock'];
+    }
+    return ['venue', 'lock'];
+  }, [authUser?.role]);
+
+  const memberSortLabelMap: Record<MemberSortTag, string> = {
+    role: '角色標籤',
+    campaign: '場次標籤',
+    venue: '會場標籤',
+    lock: '鎖定狀態標籤'
+  };
+
+  const cycleMemberSortTag = useCallback(() => {
+    const currentIndex = memberSortChoices.indexOf(memberSortTag);
+    const nextIndex = currentIndex >= 0
+      ? (currentIndex + 1) % memberSortChoices.length
+      : 0;
+    setMemberSortTag(memberSortChoices[nextIndex]);
+  }, [memberSortChoices, memberSortTag]);
+
+  const nextMemberSortTag = useMemo<MemberSortTag>(() => {
+    const currentIndex = memberSortChoices.indexOf(memberSortTag);
+    const nextIndex = currentIndex >= 0
+      ? (currentIndex + 1) % memberSortChoices.length
+      : 0;
+    return memberSortChoices[nextIndex];
+  }, [memberSortChoices, memberSortTag]);
 
   const sortedMembersByTag = useMemo(() => {
     const tagValue = (member: AdminMember): string => {
@@ -421,7 +457,14 @@ function App() {
       return member.is_voted ? '1-locked' : '2-editable';
     };
 
-    return [...members].sort((a, b) => {
+    const visibleMembers = members.filter((member) => {
+      if (!authUser || !isAdminRole(authUser.role)) {
+        return true;
+      }
+      return member.identifier !== authUser.identifier;
+    });
+
+    return [...visibleMembers].sort((a, b) => {
       const aTag = tagValue(a);
       const bTag = tagValue(b);
       if (aTag !== bTag) {
@@ -429,7 +472,7 @@ function App() {
       }
       return a.display_name.localeCompare(b.display_name, 'zh-Hant');
     });
-  }, [members, memberSortTag]);
+  }, [members, memberSortTag, authUser]);
   const setupVenue = venues.find((venue) => venue.id === setupVenueId) || null;
 
   const parseAxiosError = useCallback((err: unknown): string => {
@@ -799,17 +842,11 @@ function App() {
         if (activeId) {
           setSelectedMemberCampaignId(activeId);
         }
-        setAdminTab((prev) => (prev === 'archives' ? prev : 'members'));
+        setAdminTab((prev) => ((prev === 'archives' || prev === 'deleted') ? prev : 'members'));
       } else {
-        if (!selectedMemberCampaignIdRef.current) {
-          const fallbackCampaign = [...(normalizedState.active_campaigns_list ?? []), ...Object.values(normalizedState.campaigns_by_year)
-            .flat()]
-            .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
-          if (fallbackCampaign?.id) {
-            setSelectedMemberCampaignId(fallbackCampaign.id);
-          }
-        }
-        setAdminTab((prev) => (prev === 'archives' ? prev : 'members'));
+        setSelectedMemberCampaignId('');
+        setMembers([]);
+        setAdminTab((prev) => ((prev === 'archives' || prev === 'deleted') ? prev : 'members'));
       }
       return normalizedState;
     } catch (err: unknown) {
@@ -844,12 +881,13 @@ function App() {
       const systemState = await loadSystemState();
       const preferredCampaignId = systemState?.current_campaign?.id
         || systemState?.active_campaigns_list?.[0]?.id
-        || selectedMemberCampaignIdRef.current
-        || Object.values(systemState?.campaigns_by_year ?? {})
-          .flat()
-          .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0]?.id;
+        || '';
       await loadVenues(preferredCampaignId);
-      await loadMembers(preferredCampaignId);
+      if (preferredCampaignId) {
+        await loadMembers(preferredCampaignId);
+      } else {
+        setMembers([]);
+      }
     } finally {
       setIsLoadingAdminData(false);
     }
@@ -886,8 +924,27 @@ function App() {
     const scopeCampaignId = selectedMemberCampaignId || activeCampaign?.id || '';
     if (scopeCampaignId) {
       loadMembers(scopeCampaignId);
+      return;
     }
+    setMembers([]);
   }, [adminTab, authUser?.role, selectedMemberCampaignId, activeCampaign?.id, loadMembers]);
+
+  useEffect(() => {
+    if (isSuperAdmin(authUser?.role)) {
+      return;
+    }
+    if (memberSortTag === 'role' || memberSortTag === 'campaign') {
+      setMemberSortTag('venue');
+    }
+  }, [authUser?.role, memberSortTag]);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timer = window.setTimeout(() => setMessage(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   const createVenue = async () => {
     if (!authHeaders || !newVenueName.trim() || isCreatingVenue) {
@@ -906,7 +963,6 @@ function App() {
       setSetupVenueId(newVenue.id);
       setSetupVenueNameDraft(venueName);
       setSetupProjectDraft('');
-      setGroupImportPreview([]);
       setSetupSelectedMemberIds([]);
       setSetupNewMemberDraft('');
       setIsVenueSetupOpen(true);
@@ -928,23 +984,193 @@ function App() {
     setSetupVenueId(venueId);
     setSetupVenueNameDraft(venue?.classroom || venue?.name || '');
     setSetupProjectDraft(projectDraft);
-    setGroupImportPreview([]);
     setSetupSelectedMemberIds(selected);
     setSetupNewMemberDraft('');
     setIsVenueSetupOpen(true);
   };
 
-  const parseGroupImportFile = async (file: File) => {
-    const text = await file.text();
-    const rows = Array.from(
-      new Set(
-        text
-          .split(/\r?\n|,|\t|;/)
-          .map((name) => normalizeDisplayName(name))
-          .filter(Boolean)
-      )
-    );
-    setGroupImportPreview(rows);
+  const downloadVenueTemplate = () => {
+    const workbook = XLSX.utils.book_new();
+    const projectRows = [
+      { classroom: 'LM503', project_name: '星火導航' },
+      { classroom: 'LM503', project_name: '雲端農務眼' },
+      { classroom: 'CS412', project_name: '語岸筆記' },
+      { classroom: 'CS412', project_name: '醫盾守護' },
+    ];
+    const judgeRows = [
+      { classroom: 'LM503', judge_name: '林柏堯' },
+      { classroom: 'LM503', judge_name: '周妍希' },
+      { classroom: 'CS412', judge_name: '陳奕辰' },
+      { classroom: 'CS412', judge_name: '高采寧' },
+    ];
+
+    const projectSheet = XLSX.utils.json_to_sheet(projectRows);
+    const judgeSheet = XLSX.utils.json_to_sheet(judgeRows);
+    XLSX.utils.book_append_sheet(workbook, projectSheet, '專題組');
+    XLSX.utils.book_append_sheet(workbook, judgeSheet, '評審');
+    XLSX.writeFile(workbook, 'venue-import-template.xlsx');
+  };
+
+  const importVenueWorkbook = async (file: File) => {
+    if (!authHeaders || !selectedMemberCampaignId || isBulkImporting) {
+      return;
+    }
+
+    type ImportBucket = { projects: Set<string>; judges: Set<string> };
+    const byClassroom = new Map<string, ImportBucket>();
+    const classroomLabel = new Map<string, string>();
+    const judgeToClassroom = new Map<string, string>();
+    const pick = (row: Record<string, string>, keys: string[]): string => {
+      for (const key of keys) {
+        const value = row[key];
+        if (value) {
+          return value;
+        }
+      }
+      return '';
+    };
+    const normalizeRow = (raw: Record<string, unknown>): Record<string, string> => {
+      const normalized: Record<string, string> = {};
+      Object.entries(raw).forEach(([key, value]) => {
+        normalized[key.trim().toLowerCase()] = normalizeDisplayName(String(value ?? ''));
+      });
+      return normalized;
+    };
+
+    try {
+      setIsBulkImporting(true);
+      setError(null);
+      setMessage(null);
+      setImportStatus({ tone: 'loading', text: '正在解析與匯入資料，請稍候...' });
+
+      let createdVenueCount = 0;
+      let updatedVenueCount = 0;
+      let assignedJudgeCount = 0;
+
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const projectSheet = workbook.Sheets['專題組'] || workbook.Sheets[workbook.SheetNames[0]];
+      const judgeSheet = workbook.Sheets['評審'] || workbook.Sheets[workbook.SheetNames[1]];
+
+      if (!projectSheet || !judgeSheet) {
+        throw new Error('找不到「專題組」與「評審」工作表');
+      }
+
+      const projectRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(projectSheet, { defval: '' });
+      const judgeRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(judgeSheet, { defval: '' });
+
+      projectRows.forEach((raw) => {
+        const row = normalizeRow(raw);
+        const classroomRaw = pick(row, ['classroom', '教室', '會場', 'venue']);
+        const projectName = pick(row, ['project_name', 'project', '專題名稱', '專題組', '專題']);
+        if (!classroomRaw || !projectName) {
+          return;
+        }
+        const classroomKey = classroomRaw.toUpperCase();
+        const bucket = byClassroom.get(classroomKey) || { projects: new Set<string>(), judges: new Set<string>() };
+        bucket.projects.add(projectName);
+        byClassroom.set(classroomKey, bucket);
+        classroomLabel.set(classroomKey, classroomRaw);
+      });
+
+      judgeRows.forEach((raw) => {
+        const row = normalizeRow(raw);
+        const classroomRaw = pick(row, ['classroom', '教室', '會場', 'venue']);
+        const judgeName = pick(row, ['judge_name', 'judge', '評審姓名', '評審']);
+        if (!classroomRaw || !judgeName) {
+          return;
+        }
+        const classroomKey = classroomRaw.toUpperCase();
+        const bucket = byClassroom.get(classroomKey) || { projects: new Set<string>(), judges: new Set<string>() };
+        const judgeIdentifier = buildNameIdentifier(judgeName);
+        const previousClassroom = judgeToClassroom.get(judgeIdentifier);
+        if (previousClassroom && previousClassroom !== classroomKey) {
+          throw new Error(`評審「${judgeName}」重複出現在不同會場`);
+        }
+        judgeToClassroom.set(judgeIdentifier, classroomKey);
+        bucket.judges.add(judgeName);
+        byClassroom.set(classroomKey, bucket);
+        classroomLabel.set(classroomKey, classroomRaw);
+      });
+
+      if (byClassroom.size === 0) {
+        throw new Error('匯入檔沒有可用資料');
+      }
+
+      const venueIdByClassroom = new Map<string, string>();
+      venues.forEach((venue) => {
+        const key = normalizeDisplayName(venue.classroom || venue.name).toUpperCase();
+        if (key) {
+          venueIdByClassroom.set(key, venue.id);
+        }
+      });
+
+      const classrooms = Array.from(byClassroom.keys());
+      for (let classroomIndex = 0; classroomIndex < classrooms.length; classroomIndex += 1) {
+        const classroomKey = classrooms[classroomIndex];
+        const bucket = byClassroom.get(classroomKey);
+        if (!bucket) {
+          continue;
+        }
+        const classroom = classroomLabel.get(classroomKey) || classroomKey;
+        let venueId = venueIdByClassroom.get(classroomKey);
+        if (!venueId) {
+          const response = await axios.post<Venue>(
+            `${API_BASE_URL}/api/admin/venues`,
+            { name: classroom, classroom },
+            { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+          );
+          venueId = response.data.id;
+          venueIdByClassroom.set(classroomKey, venueId);
+          createdVenueCount += 1;
+        }
+
+        if (bucket.projects.size > 0) {
+          await axios.patch(
+            `${API_BASE_URL}/api/admin/venues/${encodeURIComponent(venueId)}/projects`,
+            { project_names: Array.from(bucket.projects) },
+            { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+          );
+          updatedVenueCount += 1;
+        }
+
+        const judgeNames = Array.from(bucket.judges);
+        for (let judgeIndex = 0; judgeIndex < judgeNames.length; judgeIndex += 1) {
+          const judgeName = judgeNames[judgeIndex];
+          try {
+            await axios.post(
+              `${API_BASE_URL}/api/admin/members`,
+              { display_name: judgeName, role: 'judge' },
+              { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+            );
+          } catch (err: unknown) {
+            const detail = parseAxiosError(err);
+            if (!detail.includes('已存在')) {
+              throw err;
+            }
+          }
+
+          await axios.patch(
+            `${API_BASE_URL}/api/admin/members/${encodeURIComponent(buildNameIdentifier(judgeName))}/status`,
+            { assigned_venue_id: venueId, is_voted: false },
+            { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
+          );
+          assignedJudgeCount += 1;
+        }
+      }
+
+      await Promise.all([loadMembers(selectedMemberCampaignId), loadVenues(selectedMemberCampaignId)]);
+      setMessage(`一鍵匯入完成：${byClassroom.size} 個會場`);
+      setImportStatus({
+        tone: 'success',
+        text: `匯入完成：新增 ${createdVenueCount} 個會場、更新 ${updatedVenueCount} 個會場專題、指派 ${assignedJudgeCount} 位評審。`
+      });
+    } catch (err: unknown) {
+      setError('匯入會場資料失敗：' + parseAxiosError(err));
+      const detail = err instanceof Error ? err.message : parseAxiosError(err);
+      setImportStatus({ tone: 'error', text: `匯入失敗：${detail}` });
+    } finally {
+      setIsBulkImporting(false);
+    }
   };
 
   const openVenueView = useCallback(async (venueId: string) => {
@@ -1058,7 +1284,6 @@ function App() {
       setSetupVenueId('');
       setSetupVenueNameDraft('');
       setSetupProjectDraft('');
-      setGroupImportPreview([]);
       setSetupSelectedMemberIds([]);
       setSetupNewMemberDraft('');
       setMessage(`已完成會場設定`);
@@ -1111,6 +1336,7 @@ function App() {
         setSelectedMemberCampaignId(activeId);
       }
       await Promise.all([loadMembers(activeId), loadVenues(activeId)]);
+      setAdminTab('venues');
     } catch (err: unknown) {
       setError('啟動場次失敗：' + parseAxiosError(err));
     } finally {
@@ -1133,16 +1359,10 @@ function App() {
         }
       );
       setMessage('本回專題模擬投資系統已關閉並封存');
-      const latestState = await loadSystemState();
-      const fallbackCampaignId = selectedMemberCampaignId
-        || Object.values(latestState?.campaigns_by_year ?? {})
-          .flat()
-          .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0]?.id
-        || '';
-      if (fallbackCampaignId) {
-        setSelectedMemberCampaignId(fallbackCampaignId);
-      }
-      await Promise.all([loadMembers(fallbackCampaignId), loadVenues(fallbackCampaignId)]);
+      await loadSystemState();
+      setSelectedMemberCampaignId('');
+      setMembers([]);
+      await loadVenues();
     } catch (err: unknown) {
       setError('關閉場次失敗：' + parseAxiosError(err));
     } finally {
@@ -1205,6 +1425,41 @@ function App() {
       setError('還原封存紀錄失敗：' + parseAxiosError(err));
     } finally {
       setRestoringCampaignId(null);
+    }
+  };
+
+  const downloadArchiveReportPdf = async (campaign: SystemCampaign) => {
+    if (!authHeaders || downloadingReportCampaignId === campaign.id) {
+      return;
+    }
+    try {
+      setDownloadingReportCampaignId(campaign.id);
+      const response = await axios.get(
+        `${API_BASE_URL}/api/admin/system/archives/${encodeURIComponent(campaign.id)}/report-pdf`,
+        {
+          headers: authHeaders,
+          params: { year: campaign.year },
+          responseType: 'blob',
+        }
+      );
+
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = `fundthepitch-archive-${campaign.year}-${campaign.id}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      setMessage(`已下載封存報告：${campaign.label}`);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        setError('找不到封存報告端點或封存紀錄。請重啟後端並確認已安裝 reportlab。');
+      } else {
+        setError('下載封存報告失敗：' + parseAxiosError(err));
+      }
+    } finally {
+      setDownloadingReportCampaignId(null);
     }
   };
 
@@ -1419,6 +1674,8 @@ function App() {
         params: { campaign_id: selectedMemberCampaignId }
       });
       setMessage('成員已刪除');
+      setPendingMemberDelete(null);
+      setSelectedMemberId(null);
       await loadMembers();
     } catch (err: unknown) {
       setError('刪除成員失敗：' + parseAxiosError(err));
@@ -1513,7 +1770,7 @@ function App() {
             className="investment-input"
             value={displayNameInput}
             onChange={(e) => setDisplayNameInput(e.target.value)}
-            placeholder="例如：1234 或 王教授"
+            placeholder="例如：1234 或 王評審"
           />
         </div>
 
@@ -1610,136 +1867,181 @@ function App() {
         </section>
       )}
 
-      <section className="section admin-hero">
-        <div className="admin-hero-copy">
-          <span className="admin-kicker">ADMIN CONSOLE</span>
-          <h2>{displayedActiveCampaigns.length > 0 ? '進行中的專題會' : '尚未啟動專題會'}</h2>
-          <p>
-            {displayedActiveCampaigns.length > 0
-              ? `目前共有 ${displayedActiveCampaigns.length} 個啟動中的專題會。可直接在下方查看邀請網址、管理會議廳與拖拉分配評審。`
-              : '先完成年度設定與成員整理，再正式啟動本次專題模擬投資評分。'}
-          </p>
-          <div className="admin-hero-metrics">
-            <div className="admin-hero-metric">
-              <span>進行中場次</span>
-              <strong>{displayedActiveCampaigns.length}</strong>
-            </div>
-            <div className="admin-hero-metric">
-              <span>目前會議廳</span>
-              <strong>{venues.length}</strong>
-            </div>
-            <div className="admin-hero-metric">
-              <span>目前評審</span>
-              <strong>{judgeMembers.length}</strong>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="section admin-campaign-section">
-        <div className="admin-section-heading">
-          <div>
-            <h3>專題會管理</h3>
-            <p>每位管理員可同時管理自己的專題會。啟動後會自動產生邀請網址。</p>
-          </div>
-        </div>
-        <div className="admin-campaign-create-row">
-          <input
-            className="investment-input"
-            value={campaignLabelInput}
-            onChange={(e) => setCampaignLabelInput(e.target.value)}
-            placeholder="場次名稱，例如 資管系畢業專題"
-            disabled={!canStartAnotherCampaign}
-          />
-          <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign || !canStartAnotherCampaign}>
-            {isStartingCampaign ? '啟動中...' : '啟動新場次'}
-          </button>
-        </div>
-        <div className="admin-campaign-grid">
-          {displayedActiveCampaigns.length === 0 && (
-            <div className="investment-item admin-history-empty">
-              <p>目前沒有進行中的專題會。</p>
-            </div>
-          )}
-          {displayedActiveCampaigns.map((campaign) => {
-            const inviteUrl = campaign.invite_token
-              ? `${window.location.origin}${window.location.pathname}?c=${encodeURIComponent(campaign.invite_token)}`
-              : '';
-            return (
-              <div key={campaign.id} className="campaign-card">
-                <div className="campaign-card-header">
-                  <div>
-                    <div className="admin-status-badge">進行中 {campaign.year}</div>
-                    <h4>{campaign.label}</h4>
+      <section className="section admin-top-panel">
+        <button
+          type="button"
+          className="admin-collapse-header"
+          onClick={() => setIsHeroPanelOpen((prev) => !prev)}
+          aria-expanded={isHeroPanelOpen}
+        >
+          <span>專題概況與管理</span>
+          <span className={`admin-collapse-chevron${isHeroPanelOpen ? ' open' : ''}`}>▾</span>
+        </button>
+        {isHeroPanelOpen && (
+          <div className="admin-top-row">
+            <div className="admin-hero">
+              <div className="admin-hero-copy">
+                <span className="admin-kicker">ADMIN CONSOLE</span>
+                <h2>{displayedActiveCampaigns.length > 0 ? '進行中的專題會' : '尚未啟動專題會'}</h2>
+                <p>
+                  {displayedActiveCampaigns.length > 0
+                    ? `目前共有 ${displayedActiveCampaigns.length} 個啟動中的專題會。可直接在下方查看邀請網址、管理會議廳與拖拉分配評審。`
+                    : '先完成年度設定與成員整理，再正式啟動本次專題模擬投資評分。'}
+                </p>
+                <div className="admin-hero-metrics">
+                  <div className="admin-hero-metric">
+                    <span>進行中場次</span>
+                    <strong>{displayedActiveCampaigns.length}</strong>
                   </div>
-                  <button onClick={() => closeCampaign(campaign.id)} disabled={Boolean(closingCampaignId)}>
-                    {closingCampaignId === campaign.id ? '封存中...' : '關閉並封存'}
-                  </button>
+                  <div className="admin-hero-metric">
+                    <span>目前會議廳</span>
+                    <strong>{venues.length}</strong>
+                  </div>
+                  <div className="admin-hero-metric">
+                    <span>目前評審</span>
+                    <strong>{judgeMembers.length}</strong>
+                  </div>
                 </div>
-                <p className="admin-note">啟動時間：{new Date(campaign.started_at).toLocaleString('zh-Hant-TW')}</p>
-                {inviteUrl && (
-                  <div className="admin-invite-box">
-                    <label>專題會邀請網址</label>
-                    <div className="admin-invite-row">
-                      <input className="investment-input" value={inviteUrl} readOnly />
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(inviteUrl);
-                            setMessage('已複製專題會邀請網址');
-                          } catch {
-                            setError('複製失敗，請手動複製網址');
-                          }
-                        }}
-                      >
-                        複製
-                      </button>
-                      <button
-                        type="button"
-                        className="admin-invite-qr-btn"
-                        onClick={() => setQrInviteCampaign(campaign)}
-                      >
-                        QR
-                      </button>
-                    </div>
+              </div>
+            </div>
+            <div className="admin-campaign-section">
+              {(isSuperAdmin(authUser?.role) || !adminHasActiveCampaign) && (
+                <>
+                  <p className="admin-top-panel-sub">每位管理員可同時管理自己的專題會。啟動後會自動產生邀請網址。</p>
+                  <div className="admin-campaign-create-row">
+                    <input
+                      className="investment-input"
+                      value={campaignLabelInput}
+                      onChange={(e) => setCampaignLabelInput(e.target.value)}
+                      placeholder="場次名稱，例如 資管系畢業專題"
+                      disabled={!canStartAnotherCampaign}
+                    />
+                    <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign || !canStartAnotherCampaign}>
+                      {isStartingCampaign ? '啟動中...' : '啟動新場次'}
+                    </button>
+                  </div>
+                </>
+              )}
+              <div className="admin-campaign-grid">
+                {displayedActiveCampaigns.length === 0 && (
+                  <div className="investment-item admin-history-empty">
+                    <p>目前沒有進行中的專題會。</p>
                   </div>
                 )}
+                {displayedActiveCampaigns.map((campaign) => {
+                  const inviteUrl = campaign.invite_token
+                    ? `${window.location.origin}${window.location.pathname}?c=${encodeURIComponent(campaign.invite_token)}`
+                    : '';
+                  return (
+                    <div key={campaign.id} className="campaign-card">
+                      <div className="campaign-card-header">
+                        <div>
+                          <div className="admin-status-badge">進行中 {campaign.year}</div>
+                          <h4>{campaign.label}</h4>
+                        </div>
+                        <button onClick={() => closeCampaign(campaign.id)} disabled={Boolean(closingCampaignId)}>
+                          {closingCampaignId === campaign.id ? '封存中...' : '關閉並封存'}
+                        </button>
+                      </div>
+                      <p className="admin-note">啟動時間：{new Date(campaign.started_at).toLocaleString('zh-Hant-TW')}</p>
+                      {inviteUrl && (
+                        <div className="admin-invite-box">
+                          <label>專題會邀請網址</label>
+                          <div className="admin-invite-row">
+                            <input className="investment-input" value={inviteUrl} readOnly />
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(inviteUrl);
+                                  setMessage('已複製專題會邀請網址');
+                                } catch {
+                                  setError('複製失敗，請手動複製網址');
+                                }
+                              }}
+                            >
+                              複製
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-invite-qr-btn"
+                              onClick={() => setQrInviteCampaign(campaign)}
+                            >
+                              QR
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </div>
+        )}
       </section>
 
-      <div className="section admin-tab-strip">
-        <div className="nav-buttons admin-tabs">
-          <button
-            className={adminTab === 'members' ? 'active' : ''}
-            onClick={() => setAdminTab('members')}
-          >
-            成員管理
-          </button>
+      <div className="section admin-tab-strip admin-unified-nav">
+        <button
+          type="button"
+          className="admin-tabs-toggle"
+          aria-expanded={isAdminTabsOpen}
+          aria-label={isAdminTabsOpen ? '收合管理功能選單' : '展開管理功能選單'}
+          title={isAdminTabsOpen ? '收合管理功能選單' : '展開管理功能選單'}
+          onClick={() => setIsAdminTabsOpen((prev) => !prev)}
+        >
+          <span className="nav-toggle-icon" aria-hidden="true">{isAdminTabsOpen ? '✕' : '☰'}</span>
+        </button>
+        <div className={`nav-buttons admin-tabs admin-tabs-buttons ${isAdminTabsOpen ? 'open' : ''}`}>
           <button
             className={adminTab === 'venues' ? 'active' : ''}
-            onClick={() => setAdminTab('venues')}
+            onClick={() => {
+              setAdminTab('venues');
+              setIsAdminTabsOpen(false);
+            }}
             disabled={!canManageVenues}
             title={canManageVenues ? '管理會場與拖拉分派' : '請先啟動場次'}
           >
             會場管理
           </button>
           <button
+            className={adminTab === 'members' ? 'active' : ''}
+            onClick={() => {
+              setAdminTab('members');
+              setIsAdminTabsOpen(false);
+            }}
+          >
+            成員管理
+          </button>
+          <button
             className={adminTab === 'campaigns' ? 'active' : ''}
-            onClick={() => setAdminTab('campaigns')}
+            onClick={() => {
+              setAdminTab('campaigns');
+              setIsAdminTabsOpen(false);
+            }}
           >
             場次管理
           </button>
           <button
             className={adminTab === 'archives' ? 'active' : ''}
-            onClick={() => setAdminTab('archives')}
+            onClick={() => {
+              setAdminTab('archives');
+              setIsAdminTabsOpen(false);
+            }}
           >
             封存紀錄
           </button>
+          <button
+            className={adminTab === 'deleted' ? 'active' : ''}
+            onClick={() => {
+              setAdminTab('deleted');
+              setIsAdminTabsOpen(false);
+            }}
+          >
+            最近刪除
+          </button>
         </div>
+
       </div>
 
       {adminTab === 'campaigns' && <section className="section judge-form">
@@ -1853,25 +2155,53 @@ function App() {
         )}
       </section>}
 
-      {adminTab === 'members' && <section className="section judge-form">
+      {adminTab === 'members' && <section className="section judge-form" id="admin-members-section" ref={adminMembersSectionRef}>
         <div className="admin-section-heading admin-member-toolbar">
           <div>
             <h3>成員管理</h3>
             <p>顯示所有可管理成員，可依標籤排序後快速檢視與操作。</p>
           </div>
-          <div className="admin-year-picker">
-            <label htmlFor="member-sort-tag">標籤排序</label>
-            <select
-              id="member-sort-tag"
-              className="investment-input"
-              value={memberSortTag}
-              onChange={(e) => setMemberSortTag(e.target.value as MemberSortTag)}
-            >
-              <option value="role">角色標籤</option>
-              <option value="campaign">場次標籤</option>
-              <option value="venue">會場標籤</option>
-              <option value="lock">鎖定狀態標籤</option>
-            </select>
+          <div className="admin-year-picker" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            {campaignOptions.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <label htmlFor="member-campaign-filter" style={{ marginBottom: 0, fontSize: 13, whiteSpace: 'nowrap' }}>場次</label>
+                <select
+                  id="member-campaign-filter"
+                  className="investment-input"
+                  style={{ minWidth: 120, fontSize: 13 }}
+                  value={selectedMemberCampaignId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedMemberCampaignId(id);
+                    if (id) loadMembers(id);
+                    else setMembers([]);
+                  }}
+                >
+                  <option value="">請選擇場次</option>
+                  {campaignOptions.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.year} / {campaign.label}{campaign.status === 'closed' ? '（已封存）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label htmlFor="member-sort-cycle" style={{ marginBottom: 0, fontSize: 13, whiteSpace: 'nowrap' }}>標籤排序</label>
+              <div className="admin-sort-cycle-inline">
+                <span className="admin-sort-current-label">{memberSortLabelMap[memberSortTag]}</span>
+                <button
+                  id="member-sort-cycle"
+                  type="button"
+                  className="admin-sort-cycle-icon-btn"
+                  onClick={cycleMemberSortTag}
+                  aria-label="切換下一個標籤排序"
+                  title={`目前：${memberSortLabelMap[memberSortTag]}，點擊切換到：${memberSortLabelMap[nextMemberSortTag]}`}
+                >
+                  <span aria-hidden="true">⇄</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1930,14 +2260,14 @@ function App() {
               onChange={(e) => setNewMemberName(e.target.value)}
               placeholder={isSuperAdmin(authUser?.role) && !isCampaignActive ? '例如：資管系主任' : '例如：王評審'}
             />
-            {!(isSuperAdmin(authUser?.role) && !isCampaignActive) && (
+            {isSuperAdmin(authUser?.role) && (
               <select
                 className="investment-input"
                 value={newMemberRole}
                 onChange={(e) => setNewMemberRole(e.target.value as 'judge' | 'admin')}
               >
-                <option value="judge">教授</option>
-                {isSuperAdmin(authUser?.role) && <option value="admin">系所管理者</option>}
+                <option value="judge">評審</option>
+                <option value="admin">系所管理者</option>
               </select>
             )}
             <button
@@ -1951,96 +2281,102 @@ function App() {
       </section>}
 
       {adminTab === 'archives' && (
-        <>
-          <section className="section admin-history-section">
-            <div className="admin-section-heading">
-              <div>
-                <h3>歷年封存紀錄</h3>
-                <p>每年度的投資總額與場次狀態會保留在這裡。</p>
+        <section className="section admin-history-section">
+          <div className="admin-section-heading">
+            <div>
+              <h3>歷年封存紀錄</h3>
+              <p>每年度的投資總額與場次狀態會保留在這裡。</p>
+            </div>
+          </div>
+          <div className="admin-history-grid">
+            {Object.values(adminSystemState.campaigns_by_year).every(
+              (campaigns) => !campaigns.some((campaign) => campaign.status === 'closed')
+            ) && (
+              <div className="investment-item admin-history-empty">
+                <p>尚無場次紀錄</p>
               </div>
-            </div>
-            <div className="admin-history-grid">
-              {Object.values(adminSystemState.campaigns_by_year).every(
-                (campaigns) => !campaigns.some((campaign) => campaign.status === 'closed')
-              ) && (
-                <div className="investment-item admin-history-empty">
-                  <p>尚無場次紀錄</p>
-                </div>
-              )}
-              {Object.entries(adminSystemState.campaigns_by_year)
-                .sort((a, b) => Number(b[0]) - Number(a[0]))
-                .filter(([, campaigns]) => campaigns.some((campaign) => campaign.status === 'closed'))
-                .map(([year, campaigns]) => (
-                  <div key={year} className="investment-item admin-history-card">
-                    <p className="admin-history-year">{year}</p>
-                    {campaigns
-                      .filter((campaign) => campaign.status === 'closed')
-                      .map((campaign) => (
-                      <div key={campaign.id} className="admin-history-row">
-                        <strong>{campaign.label}</strong>
-                        <span>已封存</span>
-                        <span>
-                          {campaign.summary?.overall_total_investment !== undefined
-                            ? `總投資 ${campaign.summary.overall_total_investment.toLocaleString()} 元`
-                            : '尚無統計'}
-                        </span>
-                        <div className="admin-history-actions">
-                          <button onClick={() => setSelectedHistoryCampaign(campaign)}>
-                            查看戰況
-                          </button>
-                          <button onClick={() => setPendingArchiveDelete(campaign)} disabled={isDeletingArchive}>
-                            {isDeletingArchive && pendingArchiveDelete?.id === campaign.id ? '刪除中...' : '刪除封存紀錄'}
-                          </button>
-                        </div>
+            )}
+            {Object.entries(adminSystemState.campaigns_by_year)
+              .sort((a, b) => Number(b[0]) - Number(a[0]))
+              .filter(([, campaigns]) => campaigns.some((campaign) => campaign.status === 'closed'))
+              .map(([year, campaigns]) => (
+                <div key={year} className="investment-item admin-history-card">
+                  <p className="admin-history-year">{year}</p>
+                  {campaigns
+                    .filter((campaign) => campaign.status === 'closed')
+                    .map((campaign) => (
+                    <div key={campaign.id} className="admin-history-row">
+                      <strong>{campaign.label}</strong>
+                      <span>已封存</span>
+                      <span>
+                        {campaign.summary?.overall_total_investment !== undefined
+                          ? `總投資 ${campaign.summary.overall_total_investment.toLocaleString()} 元`
+                          : '尚無統計'}
+                      </span>
+                      <div className="admin-history-actions">
+                        <button onClick={() => setSelectedHistoryCampaign(campaign)}>
+                          查看戰況
+                        </button>
+                        <button
+                          onClick={() => downloadArchiveReportPdf(campaign)}
+                          disabled={downloadingReportCampaignId === campaign.id}
+                        >
+                          {downloadingReportCampaignId === campaign.id ? '下載中...' : '下載 PDF'}
+                        </button>
+                        <button onClick={() => setPendingArchiveDelete(campaign)} disabled={isDeletingArchive}>
+                          {isDeletingArchive && pendingArchiveDelete?.id === campaign.id ? '刪除中...' : '刪除封存紀錄'}
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                ))}
-            </div>
-          </section>
+                    </div>
+                  ))}
+                </div>
+              ))}
+          </div>
+        </section>
+      )}
 
-          <section className="section admin-history-section">
-            <div className="admin-section-heading">
-              <div>
-                <h3>最近刪除（30 天可還原）</h3>
-                <p>避免誤刪除，封存紀錄會先進入最近刪除，超過 30 天才會自動清除。</p>
+      {adminTab === 'deleted' && (
+        <section className="section admin-history-section">
+          <div className="admin-section-heading">
+            <div>
+              <h3>最近刪除（30 天可還原）</h3>
+              <p>避免誤刪除，封存紀錄會先進入最近刪除，超過 30 天才會自動清除。</p>
+            </div>
+          </div>
+          <div className="admin-history-grid">
+            {Object.keys(adminSystemState.recently_deleted_by_year).length === 0 && (
+              <div className="investment-item admin-history-empty">
+                <p>目前沒有最近刪除的封存紀錄。</p>
               </div>
-            </div>
-            <div className="admin-history-grid">
-              {Object.keys(adminSystemState.recently_deleted_by_year).length === 0 && (
-                <div className="investment-item admin-history-empty">
-                  <p>目前沒有最近刪除的封存紀錄。</p>
-                </div>
-              )}
-              {Object.entries(adminSystemState.recently_deleted_by_year)
-                .sort((a, b) => Number(b[0]) - Number(a[0]))
-                .map(([year, campaigns]) => (
-                  <div key={`deleted-${year}`} className="investment-item admin-history-card">
-                    <p className="admin-history-year">{year}</p>
-                    {campaigns.map((campaign) => (
-                      <div key={`${campaign.id}-${campaign.deleted_at}`} className="admin-history-row admin-history-row-deleted">
-                        <strong>{campaign.label}</strong>
-                        <span>刪除時間：{new Date(campaign.deleted_at).toLocaleString('zh-Hant-TW')}</span>
-                        <span>剩餘可還原天數：{campaign.days_remaining} 天</span>
-                        <div className="admin-history-actions">
-                          <button onClick={() => restoreArchivedCampaign(campaign)} disabled={restoringCampaignId === campaign.id || permanentDeletingCampaignId === campaign.id}>
-                            {restoringCampaignId === campaign.id ? '還原中...' : '還原紀錄'}
-                          </button>
-                          <button
-                            onClick={() => setPendingPermanentDelete(campaign)}
-                            disabled={permanentDeletingCampaignId === campaign.id || restoringCampaignId === campaign.id}
-                            style={{ marginLeft: 8, background: '#dc2626', color: '#fff', border: 'none' }}
-                          >
-                            {permanentDeletingCampaignId === campaign.id ? '刪除中...' : '立即刪除'}
-                          </button>
-                        </div>
+            )}
+            {Object.entries(adminSystemState.recently_deleted_by_year)
+              .sort((a, b) => Number(b[0]) - Number(a[0]))
+              .map(([year, campaigns]) => (
+                <div key={`deleted-${year}`} className="investment-item admin-history-card">
+                  <p className="admin-history-year">{year}</p>
+                  {campaigns.map((campaign) => (
+                    <div key={`${campaign.id}-${campaign.deleted_at}`} className="admin-history-row admin-history-row-deleted">
+                      <strong>{campaign.label}</strong>
+                      <span>刪除時間：{new Date(campaign.deleted_at).toLocaleString('zh-Hant-TW')}</span>
+                      <span>剩餘可還原天數：{campaign.days_remaining} 天</span>
+                      <div className="admin-history-actions">
+                        <button onClick={() => restoreArchivedCampaign(campaign)} disabled={restoringCampaignId === campaign.id || permanentDeletingCampaignId === campaign.id}>
+                          {restoringCampaignId === campaign.id ? '還原中...' : '還原紀錄'}
+                        </button>
+                        <button
+                          onClick={() => setPendingPermanentDelete(campaign)}
+                          disabled={permanentDeletingCampaignId === campaign.id || restoringCampaignId === campaign.id}
+                          style={{ marginLeft: 8, background: '#dc2626', color: '#fff', border: 'none' }}
+                        >
+                          {permanentDeletingCampaignId === campaign.id ? '刪除中...' : '立即刪除'}
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                ))}
-            </div>
-          </section>
-        </>
+                    </div>
+                  ))}
+                </div>
+              ))}
+          </div>
+        </section>
       )}
 
       {selectedMemberId && (() => {
@@ -2128,34 +2464,37 @@ function App() {
               <div className="admin-modal-actions">
                 {isEditingMember ? (
                   <>
-                    <button onClick={() => setIsEditingMember(false)}>取消</button>
+                    <button className="modal-btn modal-btn-neutral" onClick={() => setIsEditingMember(false)}>取消</button>
                     <button
+                      className="modal-btn modal-btn-success"
                       onClick={() => updateMember(member.identifier)}
                       disabled={updatingMemberId === member.identifier}
-                      style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)' }}
                     >
                       {updatingMemberId === member.identifier ? '儲存中...' : '儲存'}
                     </button>
                   </>
                 ) : (
                   <>
-                    <button onClick={() => setSelectedMemberId(null)}>關閉</button>
+                    <button className="modal-btn modal-btn-neutral" onClick={() => setSelectedMemberId(null)}>關閉</button>
                     {member.is_voted && (
                       <button
+                        className="modal-btn modal-btn-warning"
                         onClick={() => unlockMember(member.identifier)}
                         disabled={unlockingMemberId === member.identifier}
-                        style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)' }}
                       >
                         {unlockingMemberId === member.identifier ? '解除中...' : '解除鎖定'}
                       </button>
                     )}
-                    <button onClick={() => setIsEditingMember(true)} style={{ background: 'linear-gradient(135deg, #0ea5e9, #0284c7)' }}>
+                    <button className="modal-btn modal-btn-info" onClick={() => setIsEditingMember(true)}>
                       修改個人資料
                     </button>
                     <button
-                      onClick={() => deleteMember(member.identifier)}
+                      className="modal-btn modal-btn-danger"
+                      onClick={() => {
+                        setPendingMemberDelete(member);
+                        setSelectedMemberId(null);
+                      }}
                       disabled={deletingMemberId === member.identifier}
-                      style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)' }}
                     >
                       {deletingMemberId === member.identifier ? '刪除中...' : '刪除'}
                     </button>
@@ -2169,7 +2508,7 @@ function App() {
 
       {canManageVenues && (
         <>
-          {adminTab === 'venues' && <section className="section judge-form">
+          {adminTab === 'venues' && <section className="section judge-form" id="admin-venues-section" ref={adminVenuesSectionRef}>
             <h3>會場管理</h3>
             <p style={{ marginBottom: 12 }}>
               {isCampaignActive
@@ -2208,6 +2547,33 @@ function App() {
             )}
 
             <div className="form-group">
+              <label>一鍵匯入會場（Excel）</label>
+              <div className="input-group venue-import-row">
+                <button type="button" onClick={downloadVenueTemplate}>
+                  下載範本
+                </button>
+                <input
+                  type="file"
+                  className="investment-input"
+                  accept=".xlsx,.xls"
+                  disabled={isBulkImporting || !selectedMemberCampaignId}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.currentTarget.value = '';
+                    if (!file) return;
+                    await importVenueWorkbook(file);
+                  }}
+                />
+              </div>
+              <div className={`venue-import-status ${importStatus.tone}`} role="status" aria-live="polite">
+                {importStatus.text}
+              </div>
+              <p className="admin-modal-note" style={{ marginTop: 8 }}>
+                請使用「專題組」與「評審」兩個工作表，欄位分別為 classroom + project_name、classroom + judge_name。
+              </p>
+            </div>
+
+            <div className="form-group">
               <label>尚未分派會場的評審（可拖拉到下方會議廳）</label>
               <div className="unassigned-drag-pool">
                 {(venueJudgeGroups.__unassigned__ || []).map((judge) => (
@@ -2232,7 +2598,9 @@ function App() {
                   </div>
                 ))}
                 {!(venueJudgeGroups.__unassigned__ || []).length && (
-                  <p className="manager-empty">目前沒有尚未分派會場的評審</p>
+                  <div className="manager-empty-block">
+                    <p className="manager-empty">目前沒有尚未分派會場的評審</p>
+                  </div>
                 )}
               </div>
             </div>
@@ -2255,7 +2623,7 @@ function App() {
                   >
                     <div className="venue-col-header">
                       <strong>{venue.classroom || venue.name}</strong>
-                      <span>{(venueMemberStats[venue.id]?.managers || 0)} 管理者 / {(venueMemberStats[venue.id]?.judges || 0)} 評審</span>
+                      <span>{venueMemberStats[venue.id] || 0} 位評審</span>
                     </div>
                     <div className="venue-col-subtitle">{venue.projects.length} 個專題組</div>
                     <div className="venue-col-body">
@@ -2304,7 +2672,7 @@ function App() {
               >
                 <div className="venue-col-header">
                   <strong>未分配評審</strong>
-                  <span>0 管理者 / {(venueJudgeGroups.__unassigned__ || []).length} 評審</span>
+                  <span>{(venueJudgeGroups.__unassigned__ || []).length} 位評審</span>
                 </div>
                 <div className="venue-col-subtitle">拖到這裡可取消會議廳指派</div>
                 <div className="venue-col-body">
@@ -2506,64 +2874,10 @@ function App() {
                 placeholder={'例如：\n智慧製造組\n互動媒體組\n資料科學組'}
               />
               <div className="input-group" style={{ marginTop: 10 }}>
-                <input
-                  type="file"
-                  className="investment-input"
-                  accept=".csv,.txt"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) {
-                      return;
-                    }
-                    try {
-                      await parseGroupImportFile(file);
-                      setMessage('已載入匯入檔，請先確認清單內容');
-                    } catch {
-                      setError('匯入檔解析失敗。發生錯誤，請聯絡系統管理員');
-                    }
-                  }}
-                />
+                <p className="admin-modal-note" style={{ margin: 0 }}>
+                  建議改用「會場管理」頁面的「一鍵匯入會場（Excel）」完成批次建立。
+                </p>
               </div>
-
-              {groupImportPreview.length > 0 && (
-                <div className="investment-item" style={{ marginTop: 10 }}>
-                  <h3 style={{ fontSize: 18, marginBottom: 8 }}>匯入預覽</h3>
-                  <div className="lobby-tags" style={{ marginBottom: 10 }}>
-                    {groupImportPreview.map((group) => (
-                      <span key={`preview-${group}`} className="lobby-tag">{group}</span>
-                    ))}
-                  </div>
-                  <div className="admin-modal-actions" style={{ marginTop: 8 }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const merged = Array.from(
-                          new Set(
-                            [...setupProjectDraft.split(/\n+/), ...groupImportPreview]
-                              .map((name) => normalizeDisplayName(name))
-                              .filter(Boolean)
-                          )
-                        );
-                        setSetupProjectDraft(merged.join('\n'));
-                        setGroupImportPreview([]);
-                        setMessage('已確認匯入資料');
-                      }}
-                    >
-                      確認
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm('是否刪除此一匯入資料？')) {
-                          setGroupImportPreview([]);
-                        }
-                      }}
-                    >
-                      刪除
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="form-group">
@@ -2654,7 +2968,6 @@ function App() {
                   setSetupVenueNameDraft('');
                   setSetupProjectDraft('');
                   setSetupSelectedMemberIds([]);
-                  setGroupImportPreview([]);
                   setSetupNewMemberDraft('');
                 }}
                 disabled={isSavingVenueSetup}
@@ -2691,6 +3004,34 @@ function App() {
                 disabled={permanentDeletingCampaignId === pendingPermanentDelete.id}
               >
                 {permanentDeletingCampaignId === pendingPermanentDelete.id ? '刪除中...' : '確認永久刪除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingMemberDelete && (
+        <div className="admin-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal admin-confirm-modal">
+            <h3>確認刪除成員？</h3>
+            <p className="admin-modal-note">
+              你即將刪除「{formatMemberIdentity(pendingMemberDelete.identifier, pendingMemberDelete.display_name)}」。
+              刪除後將無法復原，請再次確認。
+            </p>
+            <div className="admin-modal-actions">
+              <button
+                onClick={() => setPendingMemberDelete(null)}
+                disabled={deletingMemberId === pendingMemberDelete.identifier}
+              >
+                取消
+              </button>
+              <button
+                className="submit-button"
+                style={{ background: '#dc2626' }}
+                onClick={() => deleteMember(pendingMemberDelete.identifier)}
+                disabled={deletingMemberId === pendingMemberDelete.identifier}
+              >
+                {deletingMemberId === pendingMemberDelete.identifier ? '刪除中...' : '確認刪除'}
               </button>
             </div>
           </div>
@@ -2897,21 +3238,27 @@ function App() {
     <div className="app-container">
       <div className="navigation">
         <div className="navigation-top-row">
-          <h1>FundThePitch - 專題模擬投資評分系統</h1>
+          <h1>
+            FundThePitch
+            <br />
+            專題模擬投資評分系統
+          </h1>
           {authUser && (
             <button
               className="nav-toggle"
               type="button"
               onClick={() => setIsMobileNavOpen((prev) => !prev)}
               aria-expanded={isMobileNavOpen}
-              aria-label="切換導覽列"
+              aria-label={isMobileNavOpen ? '收合選單' : '展開選單'}
+              title={isMobileNavOpen ? '收合選單' : '展開選單'}
             >
-              {isMobileNavOpen ? '收合選單' : '展開選單'}
+              <span className="nav-toggle-icon" aria-hidden="true">{isMobileNavOpen ? '✕' : '☰'}</span>
             </button>
           )}
         </div>
         {authUser && (
-          <div className={`nav-buttons ${isMobileNavOpen ? 'open' : ''}`}>
+          <div className={`nav-buttons top-nav-buttons ${isMobileNavOpen ? 'open' : ''}`}>
+            <div className="top-nav-buttons-inner">
               {isAdminRole(authUser.role) && (
                 <button
                   onClick={() => {
@@ -2954,13 +3301,19 @@ function App() {
                 會場投資戰況
               </button>
               <button onClick={logout} disabled={isLoggingOut}>{isLoggingOut ? '登出中...' : '登出'}</button>
+            </div>
           </div>
         )}
       </div>
 
+      {message && (
+        <div className="system-toast" role="status" aria-live="polite">
+          {message}
+        </div>
+      )}
+
       <div className="content">
         {error && <div className="error-message">{error || '發生錯誤，請聯絡系統管理員'}</div>}
-        {message && <div className="success-message">{message}</div>}
 
         {!authUser && renderLogin()}
 
@@ -2997,9 +3350,9 @@ function App() {
         )}
 
         {authUser && currentView === 'dashboard' && canSeeDashboard && (
-          <div>
+          <div className="dashboard-page-flow">
             {!isPresentationMode && (
-              <div className="container" style={{ maxWidth: 920, marginBottom: 16 }}>
+              <div className="container dashboard-venue-picker-shell" style={{ width: 'min(95vw, 1440px)' }}>
                 <section className="section">
                   <h3>跨會場投資戰況</h3>
                   <p style={{ marginBottom: 12 }}>所有人都可查看所有會場，即時切換觀察投資走勢。</p>
@@ -3034,7 +3387,7 @@ function App() {
         )}
 
         {authUser && currentView === 'dashboard' && !canSeeDashboard && (
-          <div className="container" style={{ maxWidth: 920 }}>
+          <div className="container" style={{ width: 'min(95vw, 1440px)' }}>
             <section className="section">
               <h3>跨會場投資戰況</h3>
               <p>目前尚未建立可查看的會場，請先由管理員新增會場。</p>

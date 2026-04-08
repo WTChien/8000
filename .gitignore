@@ -1,62 +1,57 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environment
-.venv/
-venv/
-ENV/
-env/
-.env
-
-# Node
-node_modules/
-npm-debug.log
-yarn-error.log
-
-# IDE
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-.DS_Store
 
-# React
-.eslintcache
-/build
-/dist
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Testing
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+backend/keys/*.json
+
+# =========================
+# Python
+# =========================
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
 .pytest_cache/
+.mypy_cache/
 .coverage
+.coverage.*
 htmlcov/
 
-# OS
-.DS_Store
-Thumbs.db
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/.cache/
 
-# IDE Config Files
-*.sublime-workspace
-*.sublime-project
-
-backend/keys/
+# =========================
+# Build / Temp
+# =========================
+dist/
+build/
+*.tmp
+*.temp

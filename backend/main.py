@@ -2,14 +2,24 @@ import os
 import re
 import secrets
 import math
+from io import BytesIO
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from firestore_db import FirestoreDB
 
@@ -1215,6 +1225,12 @@ def build_campaign_summary(campaign_id: Optional[str] = None) -> dict:
     if campaign_id and campaign_id in active_campaigns:
         scope_year = campaign_record_year(active_campaigns[campaign_id], scope_year)
     target_venues = venues_for_campaign(campaign_id) if campaign_id else list(venues)
+    scoped_members = list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
+    judge_name_by_identifier = {
+        str(user.get("identifier", "")): str(user.get("display_name", ""))
+        for user in scoped_members
+        if normalize_role(user.get("role", "judge")) == "judge"
+    }
     venue_summaries = []
     overall_project_rows: List[dict] = []
 
@@ -1247,10 +1263,70 @@ def build_campaign_summary(campaign_id: Optional[str] = None) -> dict:
             )
 
         total_investment = sum(float(item.get("total_investment", 0)) for item in projects_data)
+        project_name_by_id = {
+            str(item.get("id", "")): str(item.get("name", "未命名專題"))
+            for item in projects_data
+        }
+        judge_map = venue_judge_investments.get(venue_id, {})
+        judge_allocations: List[dict] = []
+        project_judge_breakdown: List[dict] = []
+        project_breakdown_map: Dict[str, List[dict]] = {project_id: [] for project_id in project_name_by_id.keys()}
+
+        for identifier, allocations in judge_map.items():
+            per_project_rows: List[dict] = []
+            total_by_judge = 0.0
+            for project_id, amount in allocations.items():
+                normalized_amount = float(amount)
+                if project_id not in project_name_by_id:
+                    continue
+                if normalized_amount <= 0:
+                    continue
+                total_by_judge += normalized_amount
+                per_project_rows.append(
+                    {
+                        "project_id": str(project_id),
+                        "project_name": project_name_by_id[str(project_id)],
+                        "amount": normalized_amount,
+                    }
+                )
+                project_breakdown_map[str(project_id)].append(
+                    {
+                        "identifier": str(identifier),
+                        "display_name": judge_name_by_identifier.get(str(identifier), str(identifier)),
+                        "amount": normalized_amount,
+                    }
+                )
+
+            per_project_rows.sort(key=lambda row: row["amount"], reverse=True)
+            judge_allocations.append(
+                {
+                    "identifier": str(identifier),
+                    "display_name": judge_name_by_identifier.get(str(identifier), str(identifier)),
+                    "total_investment": total_by_judge,
+                    "investments": per_project_rows,
+                }
+            )
+
+        judge_allocations.sort(key=lambda row: float(row.get("total_investment", 0)), reverse=True)
+
+        for project in ranked_projects:
+            project_id = str(project.get("project_id", ""))
+            allocations = project_breakdown_map.get(project_id, [])
+            allocations.sort(key=lambda row: float(row.get("amount", 0)), reverse=True)
+            project_judge_breakdown.append(
+                {
+                    "project_id": project_id,
+                    "project_name": str(project.get("project_name", "未命名專題")),
+                    "total_investment": float(project.get("total_investment", 0)),
+                    "rank": int(project.get("rank", 0)),
+                    "allocations": allocations,
+                }
+            )
+
         judge_count = len(
             [
                 user
-                for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
+                for user in scoped_members
                 if normalize_role(user.get("role", "judge")) == "judge"
                 and user.get("assigned_venue_id") == venue_id
             ]
@@ -1258,7 +1334,7 @@ def build_campaign_summary(campaign_id: Optional[str] = None) -> dict:
         locked_count = len(
             [
                 user
-                for user in list_verified_users(campaign_year=scope_year, campaign_id=scope_campaign_id)
+                for user in scoped_members
                 if normalize_role(user.get("role", "judge")) == "judge"
                 and user.get("assigned_venue_id") == venue_id
                 and bool(user.get("is_voted", False))
@@ -1272,6 +1348,8 @@ def build_campaign_summary(campaign_id: Optional[str] = None) -> dict:
                 "judge_count": judge_count,
                 "locked_count": locked_count,
                 "projects": ranked_projects,
+                "judge_allocations": judge_allocations,
+                "project_judge_breakdown": project_judge_breakdown,
             }
         )
 
@@ -1452,6 +1530,320 @@ def campaigns_grouped_by_year() -> Dict[str, List[SystemCampaignResponse]]:
         grouped.setdefault(year_key, []).append(serialize_campaign(record))
 
     return grouped
+
+
+def find_closed_campaign_record(campaign_id: str, year: Optional[int] = None) -> Optional[dict]:
+    if year is not None:
+        target_year = normalize_campaign_year(year)
+        history = campaign_history_for_year(target_year)
+        found = next(
+            (
+                item
+                for item in history
+                if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed"
+            ),
+            None,
+        )
+        if found:
+            return found
+
+        deleted_rows = purge_expired_recently_deleted(target_year)
+        found_deleted = next(
+            (
+                item
+                for item in deleted_rows
+                if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed"
+            ),
+            None,
+        )
+        if found_deleted:
+            return found_deleted
+
+    candidates: List[dict] = []
+    if db.enabled:
+        for state in db.list_campaign_states():
+            rows = state.get("campaign_history", [])
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed":
+                    candidates.append(dict(item))
+
+            deleted_rows = state.get("recently_deleted_campaigns", [])
+            for item in deleted_rows:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed":
+                    candidates.append(dict(item))
+    else:
+        for item in campaign_history:
+            if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed":
+                candidates.append(dict(item))
+        for item in recently_deleted_campaigns:
+            if str(item.get("id", "")) == campaign_id and str(item.get("status", "")) == "closed":
+                candidates.append(dict(item))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda row: str(row.get("closed_at", "")), reverse=True)
+    return candidates[0]
+
+
+def build_archive_report_pdf(campaign: dict) -> bytes:
+    # Prefer embedded TrueType fonts (better glyph coverage across PDF viewers),
+    # then fallback to built-in CID fonts.
+    font_name = "Helvetica"
+    ttf_candidates = [
+        ("ArialUnicode", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        ("ArialUnicode", "/Library/Fonts/Arial Unicode.ttf"),
+        ("NISC18030", "/System/Library/Fonts/Supplemental/NISC18030.ttf"),
+    ]
+    for name, path in ttf_candidates:
+        try:
+            if os.path.exists(path):
+                if name not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(name, path))
+                font_name = name
+                break
+        except Exception:
+            continue
+
+    if font_name == "Helvetica":
+        for candidate in ("MSung-Light", "STSong-Light"):
+            try:
+                if candidate not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(UnicodeCIDFont(candidate))
+                font_name = candidate
+                break
+            except Exception:
+                continue
+
+    summary = normalize_campaign_summary(campaign.get("summary")) or {}
+    venues = summary.get("venues") if isinstance(summary.get("venues"), list) else []
+    overall_ranking = summary.get("overall_project_ranking") if isinstance(summary.get("overall_project_ranking"), list) else []
+    venue_ranking = sorted(
+        [item for item in venues if isinstance(item, dict)],
+        key=lambda row: float(row.get("total_investment", 0)),
+        reverse=True,
+    )
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+        title="FundThePitch 封存報告",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleZh",
+        parent=styles["Heading1"],
+        fontName=font_name,
+        fontSize=18,
+        leading=24,
+        spaceAfter=8,
+    )
+    section_style = ParagraphStyle(
+        "SectionZh",
+        parent=styles["Heading2"],
+        fontName=font_name,
+        fontSize=13,
+        leading=18,
+        spaceBefore=8,
+        spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "BodyZh",
+        parent=styles["BodyText"],
+        fontName=font_name,
+        fontSize=10.5,
+        leading=15,
+    )
+    small_style = ParagraphStyle(
+        "SmallZh",
+        parent=body_style,
+        fontSize=9.5,
+        leading=13,
+    )
+    story: List[object] = []
+
+    def p(text: str, style: ParagraphStyle = body_style) -> Paragraph:
+        escaped = (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        return Paragraph(escaped, style)
+
+    def section(title: str) -> None:
+        story.append(p(title, section_style))
+
+    campaign_year = int(campaign.get("year", now_utc().year))
+    campaign_label = str(campaign.get("label", "未命名場次"))
+    closed_at_raw = parse_time(campaign.get("closed_at"))
+    closed_at = closed_at_raw.astimezone().strftime("%Y年%m月%d日 %H:%M") if closed_at_raw else "未記錄"
+    overall_total = float(summary.get("overall_total_investment", 0))
+
+    story.append(p("FundThePitch 封存報告", title_style))
+    story.append(p(f"場次：{campaign_year} / {campaign_label}"))
+    story.append(p(f"封存時間：{closed_at}"))
+    story.append(p(f"總投資金額：{overall_total:,.0f} 元"))
+    story.append(Spacer(1, 6))
+
+    section("一、全場專題組總排名")
+    if overall_ranking:
+        top_rows = [[p("排名", small_style), p("專題組", small_style), p("會場", small_style), p("總投資", small_style)]]
+        for index, project in enumerate(overall_ranking, start=1):
+            if not isinstance(project, dict):
+                continue
+            rank = int(project.get("rank", index))
+            project_name = str(project.get("project_name", "未命名專題"))
+            venue_name = str(project.get("venue_name", "未指定會場"))
+            total_investment = float(project.get("total_investment", 0))
+            top_rows.append(
+                [
+                    p(f"第 {rank} 名", small_style),
+                    p(project_name, small_style),
+                    p(venue_name, small_style),
+                    p(f"{total_investment:,.0f} 元", small_style),
+                ]
+            )
+
+        top_table = Table(top_rows, colWidths=[24 * mm, 52 * mm, 52 * mm, 31 * mm], repeatRows=1)
+        top_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(top_table)
+    else:
+        story.append(p("無全場排名資料"))
+
+    story.append(Spacer(1, 8))
+    section("二、各會場專題組排名與評審分配")
+    if not venue_ranking:
+        story.append(p("無專題資料"))
+    for venue in venue_ranking:
+        venue_name = str(venue.get("venue_name", venue.get("venue_id", "未命名會場")))
+        story.append(p(f"會場：{venue_name}", section_style))
+
+        project_rows = venue.get("project_judge_breakdown")
+        if not isinstance(project_rows, list) or len(project_rows) == 0:
+            legacy_projects = venue.get("projects") if isinstance(venue.get("projects"), list) else []
+            project_rows = []
+            for p in legacy_projects:
+                if not isinstance(p, dict):
+                    continue
+                project_rows.append(
+                    {
+                        "project_name": str(p.get("project_name", "未命名專題")),
+                        "rank": int(p.get("rank", 0)),
+                        "total_investment": float(p.get("total_investment", 0)),
+                        "allocations": [],
+                    }
+                )
+
+        project_table_rows = [[p("名次", small_style), p("專題組", small_style), p("總投資", small_style), p("評審分配", small_style)]]
+        for project in project_rows:
+            project_name = str(project.get("project_name", "未命名專題"))
+            project_rank = int(project.get("rank", 0))
+            project_total = float(project.get("total_investment", 0))
+            rank_text = f"第 {project_rank} 名" if project_rank > 0 else "未排名"
+
+            allocations = project.get("allocations") if isinstance(project.get("allocations"), list) else []
+            if not allocations:
+                allocation_text = "無評審分配明細（舊封存紀錄）"
+            else:
+                chunks: List[str] = []
+                for allocation in allocations:
+                    if not isinstance(allocation, dict):
+                        continue
+                    judge_name = str(allocation.get("display_name", allocation.get("identifier", "未知評審")))
+                    amount = float(allocation.get("amount", 0))
+                    chunks.append(f"{judge_name}: {amount:,.0f} 元")
+                allocation_text = "<br/>".join(chunks) if chunks else "無評審分配明細"
+
+            project_table_rows.append(
+                [
+                    p(rank_text, small_style),
+                    p(project_name, small_style),
+                    p(f"{project_total:,.0f} 元", small_style),
+                    p(allocation_text, small_style),
+                ]
+            )
+
+        project_table = Table(project_table_rows, colWidths=[24 * mm, 52 * mm, 30 * mm, 53 * mm], repeatRows=1)
+        project_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(project_table)
+        story.append(Spacer(1, 8))
+
+    if story:
+        story.append(PageBreak())
+    section("三、會場投資總額彙整")
+    if venue_ranking:
+        venue_rows = [[p("會場", small_style), p("總投資", small_style), p("評審鎖定", small_style)]]
+        for venue in venue_ranking:
+            venue_name = str(venue.get("venue_name", venue.get("venue_id", "未命名會場")))
+            venue_total = float(venue.get("total_investment", 0))
+            locked = int(venue.get("locked_count", 0))
+            judges = int(venue.get("judge_count", 0))
+            venue_rows.append(
+                [
+                    p(venue_name, small_style),
+                    p(f"{venue_total:,.0f} 元", small_style),
+                    p(f"{locked}/{judges}", small_style),
+                ]
+            )
+
+        venue_table = Table(venue_rows, colWidths=[70 * mm, 45 * mm, 44 * mm], repeatRows=1)
+        venue_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(venue_table)
+    else:
+        story.append(p("無會場彙整資料"))
+
+    story.append(Spacer(1, 6))
+    story.append(p(f"匯出時間：{now_utc().isoformat()}", small_style))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def recently_deleted_grouped_by_year() -> Dict[str, List[RecentlyDeletedCampaignResponse]]:
@@ -2136,6 +2528,28 @@ def restore_archived_campaign(
         ] + [dict(item) for item in remaining_deleted]
 
     return serialize_campaign(restored)
+
+
+@app.get("/api/admin/system/archives/{campaign_id}/report-pdf")
+def download_archived_campaign_report_pdf(
+    campaign_id: str,
+    year: Optional[int] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
+    _ = user
+    record = find_closed_campaign_record(campaign_id, year)
+    if not record:
+        raise HTTPException(status_code=404, detail="找不到指定封存紀錄")
+
+    pdf_bytes = build_archive_report_pdf(record)
+    report_year = campaign_record_year(record)
+    filename = f"fundthepitch-archive-{report_year}-{campaign_id}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.delete("/api/admin/system/recently-deleted/{campaign_id}")
