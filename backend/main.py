@@ -2322,10 +2322,10 @@ def submit_investment(
     venue_id: Optional[str] = None
 
     for project_id, amount in data.investments.items():
-        if amount <= 0:
+        if amount < 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"每個專題都必須投資大於 0 元。專題 {project_id} 的投資金額無效",
+                detail=f"投資金額不可小於 0 元。專題 {project_id} 的投資金額無效",
             )
 
     total_investment = sum(data.investments.values())

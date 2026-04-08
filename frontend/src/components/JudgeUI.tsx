@@ -140,9 +140,9 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
     return totalInvested === TOTAL_BUDGET;
   }, [investments, projects, TOTAL_BUDGET]);
 
-  // Check if all projects have > 0 investment
-  const hasZeroInvestment = useCallback(() => {
-    return Object.values(investments).some(amount => amount <= 0);
+  // Check if any project has an invalid negative investment.
+  const hasNegativeInvestment = useCallback(() => {
+    return Object.values(investments).some((amount) => amount < 0);
   }, [investments]);
 
   // Handle investment amount change
@@ -180,10 +180,10 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       return;
     }
 
-    // Check that all projects have > 0 investment
+    // Draft save may keep some projects at 0, but negative values are never allowed.
     for (const [projectId, amount] of Object.entries(investments)) {
-      if (amount <= 0) {
-        setError(`每個專題都必須投資大於 0 元。專題 ${projectId} 的投資金額無效。`);
+      if (amount < 0) {
+        setError(`投資金額不可小於 0 元。專題 ${projectId} 的投資金額無效。`);
         submittingRef.current = false;
         return;
       }
@@ -382,19 +382,19 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
         </div>
 
         <div style={{ marginTop: 20 }}>
-          {!isLocked && (getTotalInvested() > TOTAL_BUDGET || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= TOTAL_BUDGET) || hasZeroInvestment()) && (
+          {!isLocked && (getTotalInvested() > TOTAL_BUDGET || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= TOTAL_BUDGET) || hasNegativeInvestment()) && (
             <div className="validation-message" style={{ marginBottom: 12 }}>
               {getTotalInvested() === 0 ? (
                 <p>❌ 投資總額不可為 0 元，請至少投資一個專題。</p>
               ) : null}
-              {hasZeroInvestment() && getTotalInvested() > 0 ? (
-                <p>❌ 每個專題都必須投資大於 0 元，請為所有專題分配投資。</p>
+              {hasNegativeInvestment() ? (
+                <p>❌ 投資金額不可小於 0 元，請修正後再上傳。</p>
               ) : null}
               {getTotalInvested() > TOTAL_BUDGET ? (
                 <p>❌ 預算超出上限：超過 <strong>${(getTotalInvested() - TOTAL_BUDGET).toLocaleString()}</strong> 元</p>
               ) : null}
               {getRemainingBudget() > 0 ? (
-                <p>ℹ️ 目前尚有 <strong>${getRemainingBudget().toLocaleString()}</strong> 元未分配，可先上傳結果。</p>
+                <p>ℹ️ 目前尚有 <strong>${getRemainingBudget().toLocaleString()}</strong> 元未分配，可先上傳結果；尚未分配的專題可暫時保留為 0 元。</p>
               ) : null}
               {!isFormValid() && getTotalInvested() <= TOTAL_BUDGET ? (
                 <p>ℹ️ 若要上傳最後結果並鎖定，需滿 10,000 元（可集中投資單一專題）。</p>
@@ -423,7 +423,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
             </button>
           </div>
           <p style={{ marginTop: 10, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            ⚠️ 每聽完一組報告後，請按「<strong>上傳結果</strong>」儲存目前配分，可隨時修改。<br />
+            ⚠️ 每聽完一組報告後，請按「<strong>上傳結果</strong>」儲存目前配分，可隨時修改；尚未決定的專題可先保留為 0 元。<br />
             所有組別聽完並確認無誤後，再按「<strong>最後結果上傳</strong>」鎖定——鎖定後將無法再更改任何結果。<br />
             <br />
             若有任何問題或不小心誤觸鎖定，請立即告知現場工作人員協助處理。
