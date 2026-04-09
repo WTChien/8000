@@ -93,11 +93,152 @@ body {
   gap: 10px;
 }
 
+.top-nav-buttons {
+  margin-left: auto;
+  width: min(52vw, 560px);
+}
+
 .top-nav-buttons-inner {
   width: 100%;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.top-nav-buttons-inner > button {
+  width: 100%;
+}
+
+.help-icon-button {
+  min-height: 44px;
+  padding: 0 10px;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.floating-help-button {
+  position: fixed;
+  top: 118px;
+  right: 14px;
+  z-index: 1200;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  cursor: pointer;
+}
+
+.floating-help-button:hover {
+  border-color: var(--accent-invest);
+  color: var(--accent-invest);
+}
+
+.tutorial-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 22px;
+  background: rgba(2, 6, 23, 0.48);
+}
+
+.tutorial-backdrop.with-spotlight {
+  background: transparent;
+}
+
+.tutorial-backdrop.with-spotlight::before {
+  content: '';
+  position: fixed;
+  top: var(--tutorial-spotlight-top, 0px);
+  left: var(--tutorial-spotlight-left, 0px);
+  width: var(--tutorial-spotlight-width, 0px);
+  height: var(--tutorial-spotlight-height, 0px);
+  border-radius: var(--tutorial-spotlight-radius, 14px);
+  box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.52);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tutorial-modal {
+  position: relative;
+  z-index: 2;
+  width: min(392px, 100%);
+  border-radius: 20px 20px 28px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.2);
+  padding: 16px;
+}
+
+.tutorial-highlight-target {
+  position: relative;
+  z-index: 1701 !important;
+  border-radius: 14px;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.9);
+  transition: box-shadow 0.24s ease;
+}
+
+.tutorial-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tutorial-header h3 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.25;
+}
+
+.tutorial-step-indicator {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tutorial-text {
+  margin-top: 10px;
+  color: var(--text-primary);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.tutorial-actions {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tutorial-actions button {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.tutorial-skip-button {
+  border: 1px solid var(--border-soft);
+  background: #f8fafc;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.tutorial-next-button {
+  background: linear-gradient(90deg, #2f6eea, #2b57c8);
 }
 
 .admin-tabs {
@@ -957,6 +1098,29 @@ body {
   align-items: center;
 }
 
+.venue-import-row button {
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+.venue-import-row .venue-template-button {
+  font-size: 12px;
+  padding: 5px 8px;
+  min-height: 30px;
+  border-radius: 8px;
+}
+
+.venue-import-row .investment-input {
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+.venue-import-row .investment-input::file-selector-button {
+  font-size: 14px;
+  padding: 6px 10px;
+  margin-right: 8px;
+}
+
 .venue-import-status {
   margin-top: 10px;
   border: 1px solid var(--border-soft);
@@ -987,6 +1151,58 @@ body {
   background: rgba(239, 68, 68, 0.1);
   border-color: rgba(239, 68, 68, 0.4);
   color: #991b1b;
+}
+
+.venue-tutorial-simulated {
+  border: 1px dashed rgba(59, 130, 246, 0.5);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.96));
+}
+
+.venue-sim-shell {
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.venue-sim-import {
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 12px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.venue-sim-import-row {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 8px;
+}
+
+.venue-sim-import-row span {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #334155;
+  background: #ffffff;
+}
+
+.venue-sim-board {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.venue-sim-col {
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+  border-radius: 10px;
+  padding: 10px 8px;
+  font-size: 12px;
+  text-align: center;
+  color: #475569;
+  background: rgba(248, 250, 252, 0.85);
 }
 
 .admin-modal-textarea {
@@ -2645,6 +2861,7 @@ body {
   }
 
   .top-nav-buttons .top-nav-buttons-inner {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     opacity: 0;
     transform: translateY(-8px) scale(0.98);
     transform-origin: top center;
@@ -2658,7 +2875,60 @@ body {
   }
 
   .top-nav-buttons button {
-    flex: 1;
+    min-height: 42px;
+  }
+
+  .floating-help-button {
+    top: 104px;
+    right: 10px;
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+    z-index: 1300;
+  }
+
+  .tutorial-backdrop {
+    justify-content: center;
+    padding: 14px;
+  }
+
+  .tutorial-modal {
+    width: 100%;
+    max-width: 336px;
+    padding: 12px;
+    border-radius: 18px 18px 24px 14px;
+  }
+
+  .tutorial-header h3 {
+    font-size: 17px;
+  }
+
+  .tutorial-step-indicator {
+    font-size: 11px;
+  }
+
+  .tutorial-text {
+    font-size: 13px;
+  }
+
+  .tutorial-next-button {
+    min-height: 34px;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+
+  .tutorial-skip-button {
+    min-height: 34px;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+
+  .venue-sim-import-row {
+    grid-template-columns: 1fr;
+  }
+
+  .venue-sim-board {
+    grid-template-columns: 1fr;
   }
 
   .admin-tabs-toggle {
@@ -3268,6 +3538,10 @@ body {
   border-radius: 10px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.unassigned-drag-pool .manager-empty {
+  font-size: 10px;
 }
 
 .member-role-group {

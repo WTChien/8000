@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
+import { createPortal } from 'react-dom';
 import { QRCodeCanvas } from 'qrcode.react';
 import * as XLSX from 'xlsx';
 import JudgeUI from './components/JudgeUI';
@@ -8,6 +9,7 @@ import Dashboard from './components/Dashboard';
 type ViewMode = 'lobby' | 'judge' | 'dashboard' | 'admin';
 type AdminTab = 'campaigns' | 'venues' | 'members' | 'archives' | 'deleted';
 type MemberSortTag = 'role' | 'campaign' | 'venue' | 'lock';
+type TutorialMode = 'admin' | 'judge';
 
 type Role = 'super_admin' | 'admin' | 'judge';
 
@@ -15,6 +17,125 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:9000';
 const TOKEN_STORAGE_KEY = 'fundthepitch_auth_token';
 const USER_STORAGE_KEY = 'fundthepitch_auth_user';
 const DISPLAY_NAME_SESSION_KEY = 'fundthepitch_display_name';
+const TUTORIAL_STORAGE_PREFIX = 'fundthepitch_tutorial_seen_v1';
+
+interface TutorialStep {
+  title: string;
+  description: string;
+  focusView?: ViewMode;
+  focusAdminTab?: AdminTab;
+  highlightSelector: string;
+  mockKey: string;
+  maxSpotlightAreaRatio?: number;
+  spotlightPadding?: number;
+}
+
+interface TutorialSpotlightRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+  radius: number;
+}
+
+const ADMIN_TUTORIAL_STEPS: TutorialStep[] = [
+  {
+    title: '管理員教學 1/5：主控台總覽',
+    description: '這裡是管理員主控台。你可以在上方看到目前場次、會場與評審數量，快速掌握現況。',
+    focusView: 'admin',
+    highlightSelector: '[data-tutorial="admin-overview"]',
+    mockKey: 'admin-overview',
+    maxSpotlightAreaRatio: 0.2,
+    spotlightPadding: 8
+  },
+  {
+    title: '管理員教學 2/5：啟動新場次',
+    description: '請在右上角的「啟動新場次」區塊輸入場次名稱並啟動。啟動後會產生邀請連結，可給管理員與評審登入。',
+    focusView: 'admin',
+    highlightSelector: '[data-tutorial="admin-launch-area"]',
+    mockKey: 'admin-launch',
+    maxSpotlightAreaRatio: 0.18,
+    spotlightPadding: 8
+  },
+  {
+    title: '管理員教學 3/5：會場管理',
+    description: '到「會場管理」新增會場與專題，並把評審分配到會場。也可用 xlsx 檔一鍵匯入（Excel）快速完成；若場次尚未啟動會顯示模擬畫面。',
+    focusView: 'admin',
+    focusAdminTab: 'venues',
+    highlightSelector: '[data-tutorial="admin-venues-focus"]',
+    mockKey: 'admin-venues',
+    maxSpotlightAreaRatio: 0.26,
+    spotlightPadding: 8
+  },
+  {
+    title: '管理員教學 4/5：成員管理',
+    description: '在「成員管理」新增或編輯評審/管理員，也能解鎖評審，讓他重新提交投資。',
+    focusView: 'admin',
+    focusAdminTab: 'members',
+    highlightSelector: '#admin-members-section',
+    mockKey: 'admin-members',
+    maxSpotlightAreaRatio: 0.24,
+    spotlightPadding: 8
+  },
+  {
+    title: '管理員教學 5/5：封存與刪除',
+    description: '場次結束可到「封存紀錄」下載報告或刪除；誤刪可在「最近刪除」於期限內還原。',
+    focusView: 'admin',
+    focusAdminTab: 'archives',
+    highlightSelector: '.admin-history-section',
+    mockKey: 'admin-archives',
+    maxSpotlightAreaRatio: 0.22,
+    spotlightPadding: 8
+  }
+];
+
+const JUDGE_TUTORIAL_STEPS: TutorialStep[] = [
+  {
+    title: '評審教學 1/5：先選會場',
+    description: '先到「會場選擇」查看各會場資訊，選定後加入該會場。',
+    focusView: 'lobby',
+    highlightSelector: '[data-tutorial="lobby-section"]',
+    mockKey: 'judge-lobby',
+    maxSpotlightAreaRatio: 0.24,
+    spotlightPadding: 8
+  },
+  {
+    title: '評審教學 2/5：進入投資頁',
+    description: '加入會場後切到「評審投資」，為各專題輸入投資金額。',
+    focusView: 'judge',
+    highlightSelector: '[data-tutorial="judge-section"]',
+    mockKey: 'judge-invest',
+    maxSpotlightAreaRatio: 0.24,
+    spotlightPadding: 8
+  },
+  {
+    title: '評審教學 3/5：先暫存再調整',
+    description: '可先按「上傳結果」暫存進度，不必一次配滿 10,000。',
+    focusView: 'judge',
+    highlightSelector: '.judge-submit-actions',
+    mockKey: 'judge-draft',
+    maxSpotlightAreaRatio: 0.14,
+    spotlightPadding: 10
+  },
+  {
+    title: '評審教學 4/5：最後鎖定送出',
+    description: '確認總額 10,000 後按「最後結果上傳」，送出後會鎖定，無法自行修改。',
+    focusView: 'judge',
+    highlightSelector: '.judge-submit-actions .judge-action-button.lock',
+    mockKey: 'judge-lock',
+    maxSpotlightAreaRatio: 0.1,
+    spotlightPadding: 12
+  },
+  {
+    title: '評審教學 5/5：查看戰況',
+    description: '到「會場投資戰況」可即時查看各會場與專題累積投資趨勢。',
+    focusView: 'dashboard',
+    highlightSelector: '[data-tutorial="dashboard-section"]',
+    mockKey: 'judge-dashboard',
+    maxSpotlightAreaRatio: 0.26,
+    spotlightPadding: 8
+  }
+];
 
 interface Venue {
   id: string;
@@ -259,6 +380,10 @@ function App() {
   const [memberSortTag, setMemberSortTag] = useState<MemberSortTag>('role');
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isAdminTabsOpen, setIsAdminTabsOpen] = useState(false);
+  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
+  const [tutorialMode, setTutorialMode] = useState<TutorialMode | null>(null);
+  const [tutorialStepIndex, setTutorialStepIndex] = useState(0);
+  const [tutorialSpotlightRect, setTutorialSpotlightRect] = useState<TutorialSpotlightRect | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -474,6 +599,29 @@ function App() {
     });
   }, [members, memberSortTag, authUser]);
   const setupVenue = venues.find((venue) => venue.id === setupVenueId) || null;
+  const tutorialSteps = useMemo<TutorialStep[]>(() => {
+    if (tutorialMode === 'admin') {
+      return ADMIN_TUTORIAL_STEPS;
+    }
+    if (tutorialMode === 'judge') {
+      return JUDGE_TUTORIAL_STEPS;
+    }
+    return [];
+  }, [tutorialMode]);
+
+  const currentTutorialStep = tutorialSteps[tutorialStepIndex] || null;
+  const tutorialBackdropStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!tutorialSpotlightRect) {
+      return undefined;
+    }
+    return {
+      ['--tutorial-spotlight-top' as string]: `${tutorialSpotlightRect.top}px`,
+      ['--tutorial-spotlight-left' as string]: `${tutorialSpotlightRect.left}px`,
+      ['--tutorial-spotlight-width' as string]: `${tutorialSpotlightRect.width}px`,
+      ['--tutorial-spotlight-height' as string]: `${tutorialSpotlightRect.height}px`,
+      ['--tutorial-spotlight-radius' as string]: `${tutorialSpotlightRect.radius}px`
+    };
+  }, [tutorialSpotlightRect]);
 
   const parseAxiosError = useCallback((err: unknown): string => {
     if (!axios.isAxiosError(err)) {
@@ -514,6 +662,178 @@ function App() {
   useEffect(() => {
     loadVenues();
   }, [loadVenues]);
+
+  const getTutorialStorageKey = useCallback((mode: TutorialMode, identifier: string) => {
+    return `${TUTORIAL_STORAGE_PREFIX}:${mode}:${identifier}`;
+  }, []);
+
+  const markTutorialSeen = useCallback((mode: TutorialMode, identifier?: string | null) => {
+    if (!identifier) {
+      return;
+    }
+    localStorage.setItem(getTutorialStorageKey(mode, identifier), '1');
+  }, [getTutorialStorageKey]);
+
+  const applyTutorialStepFocus = useCallback((step: TutorialStep) => {
+    if (step.focusView) {
+      setCurrentView(step.focusView);
+    }
+    if (step.focusAdminTab) {
+      setAdminTab(step.focusAdminTab);
+    }
+  }, []);
+
+  const resolveTutorialModeForCurrentUser = useCallback((): TutorialMode | null => {
+    if (!authUser) {
+      return null;
+    }
+    if (isSuperAdmin(authUser.role)) {
+      return null;
+    }
+    if (isAdminRole(authUser.role)) {
+      return currentView === 'judge' ? 'judge' : 'admin';
+    }
+    return 'judge';
+  }, [authUser, currentView]);
+
+  const openTutorial = useCallback((requestedMode?: TutorialMode) => {
+    if (authUser && isSuperAdmin(authUser.role)) {
+      return;
+    }
+    const mode = requestedMode || resolveTutorialModeForCurrentUser();
+    if (!mode) {
+      return;
+    }
+    setTutorialMode(mode);
+    setTutorialStepIndex(0);
+    setIsTutorialOpen(true);
+  }, [authUser, resolveTutorialModeForCurrentUser]);
+
+  const closeTutorial = useCallback((markAsSeen: boolean) => {
+    if (markAsSeen && tutorialMode) {
+      markTutorialSeen(tutorialMode, authUser?.identifier);
+    }
+    setIsTutorialOpen(false);
+    setTutorialSpotlightRect(null);
+  }, [authUser?.identifier, markTutorialSeen, tutorialMode]);
+
+  const goToNextTutorialStep = useCallback(() => {
+    if (!tutorialMode) {
+      return;
+    }
+    const lastIndex = tutorialSteps.length - 1;
+    if (tutorialStepIndex >= lastIndex) {
+      closeTutorial(true);
+      return;
+    }
+    setTutorialStepIndex((prev) => prev + 1);
+  }, [closeTutorial, tutorialMode, tutorialStepIndex, tutorialSteps.length]);
+
+  useEffect(() => {
+    if (!isTutorialOpen || !currentTutorialStep) {
+      return;
+    }
+    applyTutorialStepFocus(currentTutorialStep);
+  }, [applyTutorialStepFocus, currentTutorialStep, isTutorialOpen]);
+
+  useEffect(() => {
+    setTutorialSpotlightRect(null);
+
+    if (!isTutorialOpen || !currentTutorialStep?.highlightSelector) {
+      return;
+    }
+
+    let currentTarget: HTMLElement | null = null;
+    let rafId: number | null = null;
+
+    const updateSpotlightRect = () => {
+      if (!currentTarget) {
+        return;
+      }
+      const rect = currentTarget.getBoundingClientRect();
+      const padding = currentTutorialStep.spotlightPadding ?? 6;
+      const width = rect.width + padding * 2;
+      const height = rect.height + padding * 2;
+      const left = rect.left - padding;
+      const top = rect.top - padding;
+
+      setTutorialSpotlightRect({
+        top,
+        left,
+        width,
+        height,
+        radius: 14
+      });
+    };
+
+    const scheduleSpotlightRectUpdate = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = window.requestAnimationFrame(updateSpotlightRect);
+    };
+
+    const timer = window.setTimeout(() => {
+      const isMobile = window.matchMedia('(max-width: 768px)').matches;
+      if (isMobile) {
+        if (currentTutorialStep.highlightSelector.includes('admin-tab-')) {
+          setIsAdminTabsOpen(true);
+        }
+        if (currentTutorialStep.highlightSelector.includes('top-nav') || currentTutorialStep.highlightSelector.includes('navigation')) {
+          setIsMobileNavOpen(true);
+        }
+      }
+
+      const target = document.querySelector(currentTutorialStep.highlightSelector);
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      currentTarget = target;
+      target.classList.add('tutorial-highlight-target');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      scheduleSpotlightRectUpdate();
+      window.addEventListener('resize', scheduleSpotlightRectUpdate);
+      window.addEventListener('scroll', scheduleSpotlightRectUpdate, true);
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('resize', scheduleSpotlightRectUpdate);
+      window.removeEventListener('scroll', scheduleSpotlightRectUpdate, true);
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (currentTarget) {
+        currentTarget.classList.remove('tutorial-highlight-target');
+      }
+      setTutorialSpotlightRect(null);
+    };
+  }, [currentTutorialStep, isTutorialOpen]);
+
+  useEffect(() => {
+    if (!authUser) {
+      setIsTutorialOpen(false);
+      setTutorialMode(null);
+      setTutorialStepIndex(0);
+      return;
+    }
+
+    if (isSuperAdmin(authUser.role)) {
+      setIsTutorialOpen(false);
+      setTutorialMode(null);
+      setTutorialStepIndex(0);
+      return;
+    }
+
+    const defaultMode: TutorialMode = isAdminRole(authUser.role) ? 'admin' : 'judge';
+    const seen = localStorage.getItem(getTutorialStorageKey(defaultMode, authUser.identifier)) === '1';
+    if (!seen) {
+      setTutorialMode(defaultMode);
+      setTutorialStepIndex(0);
+      setIsTutorialOpen(true);
+    }
+  }, [authUser, getTutorialStorageKey]);
 
   useEffect(() => {
     if (!authUser || isAdminRole(authUser.role)) {
@@ -1787,7 +2107,7 @@ function App() {
   );
 
   const renderLobby = () => (
-    <div className="container" style={{ maxWidth: 820, marginTop: 24 }}>
+    <div className="container" style={{ maxWidth: 820, marginTop: 24 }} data-tutorial="lobby-section">
       <section className="section">
         <h2>選擇專題發表廳</h2>
         <p>
@@ -1858,7 +2178,7 @@ function App() {
   );
 
   const renderAdmin = () => (
-    <div className="container admin-shell">
+    <div className="container admin-shell" data-tutorial="admin-shell">
       {isLoadingAdminData && (
         <section className="section admin-loading-section">
           <span className="admin-loading-spinner" aria-hidden="true"></span>
@@ -1867,7 +2187,7 @@ function App() {
         </section>
       )}
 
-      <section className="section admin-top-panel">
+      <section className="section admin-top-panel" data-tutorial="admin-overview">
         <button
           type="button"
           className="admin-collapse-header"
@@ -1904,7 +2224,7 @@ function App() {
                 </div>
               </div>
             </div>
-            <div className="admin-campaign-section">
+            <div className="admin-campaign-section" data-tutorial="admin-launch-area">
               {(isSuperAdmin(authUser?.role) || !adminHasActiveCampaign) && (
                 <>
                   <p className="admin-top-panel-sub">每位管理員可同時管理自己的專題會。啟動後會自動產生邀請網址。</p>
@@ -1995,6 +2315,7 @@ function App() {
         <div className={`nav-buttons admin-tabs admin-tabs-buttons ${isAdminTabsOpen ? 'open' : ''}`}>
           <button
             className={adminTab === 'venues' ? 'active' : ''}
+            data-tutorial="admin-tab-venues"
             onClick={() => {
               setAdminTab('venues');
               setIsAdminTabsOpen(false);
@@ -2006,6 +2327,7 @@ function App() {
           </button>
           <button
             className={adminTab === 'members' ? 'active' : ''}
+            data-tutorial="admin-tab-members"
             onClick={() => {
               setAdminTab('members');
               setIsAdminTabsOpen(false);
@@ -2015,6 +2337,7 @@ function App() {
           </button>
           <button
             className={adminTab === 'campaigns' ? 'active' : ''}
+            data-tutorial="admin-tab-campaigns"
             onClick={() => {
               setAdminTab('campaigns');
               setIsAdminTabsOpen(false);
@@ -2024,6 +2347,7 @@ function App() {
           </button>
           <button
             className={adminTab === 'archives' ? 'active' : ''}
+            data-tutorial="admin-tab-archives"
             onClick={() => {
               setAdminTab('archives');
               setIsAdminTabsOpen(false);
@@ -2506,9 +2830,33 @@ function App() {
         );
       })()}
 
+      {adminTab === 'venues' && !canManageVenues && (
+        <section className="section judge-form venue-tutorial-simulated" data-tutorial="admin-venues-focus">
+          <h3>會場管理（模擬畫面）</h3>
+          <p style={{ marginBottom: 12 }}>
+            目前場次尚未啟動，正式會場資料區會在啟動後出現。先用此模擬畫面熟悉「匯入、分派、會場卡片」的位置。
+          </p>
+          <div className="venue-sim-shell">
+            <div className="venue-sim-import">
+              <strong>一鍵匯入會場（Excel）</strong>
+              <div className="venue-sim-import-row">
+                <span>下載範本</span>
+                <span>選擇檔案</span>
+                <span>未選擇任何檔案</span>
+              </div>
+            </div>
+            <div className="venue-sim-board">
+              <div className="venue-sim-col">會議廳 A（範例）</div>
+              <div className="venue-sim-col">會議廳 B（範例）</div>
+              <div className="venue-sim-col">未分配評審（範例）</div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {canManageVenues && (
         <>
-          {adminTab === 'venues' && <section className="section judge-form" id="admin-venues-section" ref={adminVenuesSectionRef}>
+          {adminTab === 'venues' && <section className="section judge-form" id="admin-venues-section" ref={adminVenuesSectionRef} data-tutorial="admin-venues-focus">
             <h3>會場管理</h3>
             <p style={{ marginBottom: 12 }}>
               {isCampaignActive
@@ -2549,7 +2897,7 @@ function App() {
             <div className="form-group">
               <label>一鍵匯入會場（Excel）</label>
               <div className="input-group venue-import-row">
-                <button type="button" onClick={downloadVenueTemplate}>
+                <button type="button" className="venue-template-button" onClick={downloadVenueTemplate}>
                   下載範本
                 </button>
                 <input
@@ -3306,6 +3654,18 @@ function App() {
         )}
       </div>
 
+      {authUser && !isSuperAdmin(authUser.role) && !isTutorialOpen && (
+        <button
+          type="button"
+          className="floating-help-button"
+          onClick={() => openTutorial()}
+          title="使用教學"
+          aria-label="開啟使用教學"
+        >
+          ?
+        </button>
+      )}
+
       {message && (
         <div className="system-toast" role="status" aria-live="polite">
           {message}
@@ -3320,15 +3680,17 @@ function App() {
         {authUser && currentView === 'lobby' && renderLobby()}
 
         {authUser && currentView === 'judge' && authToken && ((hasVenue && isCampaignActive) || (isSuperAdminUser && Boolean(effectiveVenueId))) && (
-          <JudgeUI
-            authToken={authToken}
-            authUser={authUser}
-            venueId={effectiveVenueId}
-            venueName={venues.find((v) => v.id === effectiveVenueId)?.name}
-            isLocked={isSuperAdminUser ? true : Boolean(judgeStatus?.is_voted)}
-            onLeaveVenue={isSuperAdminUser ? (async () => Promise.resolve()) : leaveVenue}
-            onSubmitted={refreshJudgeStatus}
-          />
+          <div data-tutorial="judge-section">
+            <JudgeUI
+              authToken={authToken}
+              authUser={authUser}
+              venueId={effectiveVenueId}
+              venueName={venues.find((v) => v.id === effectiveVenueId)?.name}
+              isLocked={isSuperAdminUser ? true : Boolean(judgeStatus?.is_voted)}
+              onLeaveVenue={isSuperAdminUser ? (async () => Promise.resolve()) : leaveVenue}
+              onSubmitted={refreshJudgeStatus}
+            />
+          </div>
         )}
 
         {authUser && currentView === 'judge' && !isCampaignActive && !isSuperAdminUser && (
@@ -3350,7 +3712,7 @@ function App() {
         )}
 
         {authUser && currentView === 'dashboard' && canSeeDashboard && (
-          <div className="dashboard-page-flow">
+          <div className="dashboard-page-flow" data-tutorial="dashboard-section">
             {!isPresentationMode && (
               <div className="container dashboard-venue-picker-shell" style={{ width: 'min(95vw, 1440px)' }}>
                 <section className="section">
@@ -3397,6 +3759,39 @@ function App() {
 
         {authUser && currentView === 'admin' && isAdminRole(authUser.role) && renderAdmin()}
       </div>
+
+      {isTutorialOpen && currentTutorialStep && createPortal(
+        <div
+          className={`tutorial-backdrop${tutorialSpotlightRect ? ' with-spotlight' : ''}`}
+          style={tutorialBackdropStyle}
+          role="dialog"
+          aria-modal="true"
+          aria-label="使用教學"
+        >
+          <div className="tutorial-modal">
+            <div className="tutorial-header">
+              <h3>{currentTutorialStep.title}</h3>
+              <span className="tutorial-step-indicator">
+                步驟 {tutorialStepIndex + 1} / {tutorialSteps.length}
+              </span>
+            </div>
+            <p className="tutorial-text">{currentTutorialStep.description}</p>
+            <div className="tutorial-actions">
+              <button type="button" className="tutorial-skip-button" onClick={() => closeTutorial(true)}>
+                跳過教學
+              </button>
+              <button
+                type="button"
+                className="submit-button tutorial-next-button"
+                onClick={goToNextTutorialStep}
+              >
+                {tutorialStepIndex >= tutorialSteps.length - 1 ? '完成' : '下一步'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

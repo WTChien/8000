@@ -16,6 +16,7 @@
     "xlsx": "^0.18.5"
   },
   "scripts": {
+    "prestart": "node -e \"const fs=require('fs');const p='node_modules/.cache';fs.mkdirSync(p,{recursive:true});const f=p+'/tsconfig.tsbuildinfo';if(!fs.existsSync(f)) fs.writeFileSync(f,'');\"",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
