@@ -1,4 +1,8 @@
-Traceback (most recent call last):
-  File "D:\program\8000\backend\main.py", line 15, in <module>
-    from reportlab.lib.pagesizes import A4
-ModuleNotFoundError: No module named 'reportlab'
+C:\Users\簡偉庭\AppData\Roaming\Python\Python314\site-packages\requests\__init__.py:109: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.4.1)/charset_normalizer (3.4.6) doesn't match a supported version!
+  warnings.warn(
+INFO:     Started server process [29748]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 10048] error while attempting to bind on address ('0.0.0.0', 9000): [winerror 10048] 一次只能用一個通訊端位址 (通訊協定/網路位址/連接埠)。
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

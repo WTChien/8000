@@ -1,7 +1,297 @@
 
+> fundthepitch@0.1.0 prestart
+> node -e "const fs=require('fs');const p='node_modules/.cache';fs.mkdirSync(p,{recursive:true});const f=p+'/tsconfig.tsbuildinfo';if(!fs.existsSync(f)) fs.writeFileSync(f,'');"
+
+
 > fundthepitch@0.1.0 start
 > react-scripts start
 
-(node:42780) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
+(node:36732) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
 (Use `node --trace-deprecation ...` to show where the warning was created)
-Something is already running on port 3000.
+(node:36732) [DEP_WEBPACK_DEV_SERVER_ON_AFTER_SETUP_MIDDLEWARE] DeprecationWarning: 'onAfterSetupMiddleware' option is deprecated. Please use the 'setupMiddlewares' option.
+(node:36732) [DEP_WEBPACK_DEV_SERVER_ON_BEFORE_SETUP_MIDDLEWARE] DeprecationWarning: 'onBeforeSetupMiddleware' option is deprecated. Please use the 'setupMiddlewares' option.
+Starting the development server...
+
+Compiled successfully!
+
+You can now view fundthepitch in the browser.
+
+  http://localhost:3000
+
+Note that the development build is not optimized.
+To create a production build, use npm run build.
+
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+ERROR in src/components/JudgeUI.tsx:336:22
+TS2552: Cannot find name 'TOTAL_BUDGET'. Did you mean 'totalBudget'?
+  [0m [90m 334 |[39m                 type[33m=[39m[32m"range"[39m 
+   [90m 335 |[39m                 min[33m=[39m[32m"0"[39m 
+  [31m[1m>[22m[39m[90m 336 |[39m                 max[33m=[39m{[33mTOTAL_BUDGET[39m}
+   [90m     |[39m                      [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 337 |[39m                 step[33m=[39m[32m"500"[39m
+   [90m 338 |[39m                 list[33m=[39m{[32m`tick-${project.id}`[39m}
+   [90m 339 |[39m                 value[33m=[39m{currentAmount}[0m
+
+ERROR in src/components/JudgeUI.tsx:404:56
+TS2552: Cannot find name 'TOTAL_BUDGET'. Did you mean 'totalBudget'?
+  [0m [90m 402 |[39m                 [33m<[39m[33mp[39m[33m>[39mℹ️ 目前尚有 [33m<[39m[33mstrong[39m[33m>[39m${getRemainingBudget()[33m.[39mtoLocaleString()}[33m<[39m[33m/[39m[33mstrong[39m[33m>[39m 元未分配，可先上傳結果；尚未分配的專題可暫時保留為 [35m0[39m 元。[33m<[39m[33m/[39m[33mp[39m[33m>[39m
+   [90m 403 |[39m               ) [33m:[39m [36mnull[39m}
+  [31m[1m>[22m[39m[90m 404 |[39m               {[33m![39misFormValid() [33m&&[39m getTotalInvested() [33m<=[39m [33mTOTAL_BUDGET[39m [33m?[39m (
+   [90m     |[39m                                                        [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 405 |[39m                 [33m<[39m[33mp[39m[33m>[39mℹ️ 若要上傳最後結果並鎖定，需滿 {totalBudget[33m.[39mtoLocaleString()} 元（可集中投資單一專題）。[33m<[39m[33m/[39m[33mp[39m[33m>[39m
+   [90m 406 |[39m               ) [33m:[39m [36mnull[39m}
+   [90m 407 |[39m             [33m<[39m[33m/[39m[33mdiv[39m[33m>[39m[0m
+
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+No issues found.
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\Dashboard.tsx
+  Line 168:44:  'rouletteCandidates' was used before it was defined  @typescript-eslint/no-use-before-define
+
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\Dashboard.tsx
+  Line 168:44:  'rouletteCandidates' was used before it was defined  @typescript-eslint/no-use-before-define
+
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+Files successfully emitted, waiting for typecheck results...
+Issues checking in progress...
+ERROR in src/components/Dashboard.tsx:168:44
+TS2448: Block-scoped variable 'rouletteCandidates' used before its declaration.
+  [0m [90m 166 |[39m
+   [90m 167 |[39m     [36mreturn[39m () [33m=>[39m window[33m.[39mclearTimeout(timer)[33m;[39m
+  [31m[1m>[22m[39m[90m 168 |[39m   }[33m,[39m [isRouletteAnimating[33m,[39m isRouletteMode[33m,[39m rouletteCandidates[33m,[39m rouletteStep])[33m;[39m
+   [90m     |[39m                                            [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+   [90m 169 |[39m
+   [90m 170 |[39m   [36mconst[39m getColor [33m=[39m (index[33m:[39m number)[33m:[39m string [33m=>[39m {
+   [90m 171 |[39m     [36mreturn[39m [33mCOLOR_PALETTE[39m[index [33m%[39m [33mCOLOR_PALETTE[39m[33m.[39mlength][33m;[39m[0m
+
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+No issues found.
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+No issues found.
+Compiling...
+Compiled with warnings.
+
+[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+[1m[33mWARNING[39m[22m in [1m[eslint] 
+src\components\JudgeUI.tsx
+  Line 227:6:  React Hook useCallback has a missing dependency: 'totalBudget'. Either include it or remove the dependency array. You can also replace multiple useState variables with useReducer if 'setError' needs the current value of 'totalBudget'  react-hooks/exhaustive-deps
+
+[39m[22m
+
+webpack compiled with [1m[33m1 warning[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+Compiling...
+No issues found.
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+Compiling...
+No issues found.
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+Compiling...
+No issues found.
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.
+Compiling...
+Compiled successfully!
+webpack compiled [1m[32msuccessfully[39m[22m
+No issues found.

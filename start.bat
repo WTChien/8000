@@ -30,9 +30,9 @@ if not exist logs mkdir logs
 
 REM Start backend
 echo [1/2] 啟動後端服務器（背景執行）...
-python -c "import fastapi" >nul 2>&1
+python -c "import fastapi, uvicorn, firebase_admin, reportlab" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] 缺少 Python 套件 fastapi
+    echo [ERROR] 缺少必要的 Python 套件（fastapi / uvicorn / firebase-admin / reportlab）
     echo         請先執行: python -m pip install -r requirements.txt
     if defined _oldcp chcp %_oldcp% >nul
     pause

@@ -1,13 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap');
+
 :root {
-  --bg-main: #f3f4f6;
+  --bg-main: #eef2f7;
   --bg-card: #ffffff;
-  --accent-invest: #3b82f6;
-  --accent-growth: #2563eb;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --border-soft: rgba(15, 23, 42, 0.14);
-  --overlay-surface: rgba(255, 255, 255, 0.94);
+  --accent-invest: #036aff;
+  --accent-growth: #0b5ed7;
+  --text-primary: #141414;
+  --text-secondary: #667085;
+  --border-soft: rgba(15, 23, 42, 0.08);
+  --overlay-surface: rgba(255, 255, 255, 0.9);
   --danger: #ef4444;
+  --font-ui: "Nunito Sans", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
 }
 
 * {
@@ -23,8 +26,8 @@ body,
 }
 
 body {
-  font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
-  font-size: 18px;
+  font-family: var(--font-ui);
+  font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: var(--bg-main);
@@ -292,88 +295,95 @@ body {
 }
 
 .admin-top-panel {
-  padding: 28px;
+  padding: 20px 22px;
   border-bottom: 1px solid var(--border-soft);
 }
 
 .admin-top-panel .admin-top-row {
-  margin-top: 20px;
+  margin-top: 16px;
 }
 
 .admin-top-panel-sub {
   color: var(--text-secondary);
-  font-size: 13px;
-  margin-bottom: 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0 0 8px 2px;
 }
 
 .admin-top-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: start;
-  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 18px;
 }
 
 .admin-top-row > div {
-  padding: 20px 0 8px;
+  padding: 8px 0 0;
 }
 
 .admin-top-row > div:first-child {
-  padding-right: 24px;
-  border-right: 1px solid var(--border-soft);
+  padding-right: 16px;
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .admin-top-row > div:last-child {
-  padding-left: 24px;
+  padding-left: 0;
 }
 
 .admin-top-row h2 {
-  font-size: 20px;
+  font-size: 19px;
   margin-bottom: 6px;
 }
 
 .admin-top-row .admin-hero-metric strong {
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .admin-top-row .admin-hero-metrics {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .admin-hero {
   display: block;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 18px 20px;
   background:
-    linear-gradient(135deg, rgba(234, 179, 8, 0.08), transparent 40%),
-    linear-gradient(225deg, rgba(34, 197, 94, 0.08), transparent 48%);
+    linear-gradient(135deg, rgba(59, 130, 246, 0.06), transparent 48%),
+    linear-gradient(225deg, rgba(14, 165, 233, 0.05), transparent 54%),
+    rgba(255, 255, 255, 0.9);
 }
 
 .admin-kicker {
   display: inline-flex;
-  margin-bottom: 10px;
-  padding: 5px 10px;
+  margin-bottom: 8px;
+  padding: 4px 9px;
   border-radius: 999px;
-  border: 1px solid rgba(234, 179, 8, 0.35);
+  border: 1px solid rgba(59, 130, 246, 0.24);
   color: var(--accent-invest);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.18em;
 }
 
 .admin-hero-copy p {
-  max-width: 58ch;
+  max-width: 56ch;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .admin-hero-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .admin-hero-metric {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 14px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(241, 245, 249, 0.9));
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
 }
 
 .admin-hero-metric span {
@@ -384,56 +394,152 @@ body {
 
 .admin-hero-metric strong {
   display: block;
-  margin-top: 6px;
-  font-size: 28px;
+  margin-top: 4px;
+  font-size: 24px;
+  line-height: 1.1;
 }
 
 .admin-campaign-section {
-  padding-top: 0;
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.05), transparent 42%),
+    radial-gradient(220px 120px at 100% 0%, rgba(56, 189, 248, 0.08), transparent 72%),
+    linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+}
+
+.admin-campaign-quickstart {
+  display: grid;
+  gap: 10px;
+  padding: 2px 2px 0;
+}
+
+.admin-campaign-quickstart-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.admin-quickstart-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
 }
 
 .admin-campaign-create-row {
+  width: min(100%, 460px);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 170px);
+  gap: 10px;
+  margin-bottom: 0;
+  align-items: start;
+}
+
+.admin-campaign-side-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-budget-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-campaign-create-row .investment-input {
+  min-height: 38px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.admin-campaign-name-input {
+  max-width: 100%;
+}
+
+.admin-campaign-create-row .submit-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 12px;
+  white-space: nowrap;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.admin-campaign-start-btn {
+  min-width: 0;
+}
+
+.admin-budget-update-btn {
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: linear-gradient(135deg, #f8fbff, #e8f1ff);
+  color: #1d4ed8;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.08);
+}
+
+.admin-budget-update-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #eef5ff, #dfeeff);
+}
+
+.admin-budget-update-btn .button-spinner {
+  border-color: rgba(29, 78, 216, 0.24);
+  border-top-color: currentColor;
 }
 
 .admin-campaign-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .campaign-card {
-  border: 1px solid rgba(234, 179, 8, 0.22);
-  border-radius: 18px;
-  padding: 18px;
-  background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.68)),
-    rgba(15, 23, 42, 0.78);
-  box-shadow: 0 14px 36px rgba(2, 6, 23, 0.18);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 14px 15px;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
 }
 
 .campaign-card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: 10px;
 }
 
 .campaign-card-header h4 {
-  margin-top: 6px;
-  font-size: 20px;
+  margin-top: 4px;
+  font-size: 17px;
 }
 
 .campaign-card-header button {
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: 10px;
-  background: rgba(239, 68, 68, 0.12);
-  color: #fecaca;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-radius: 9px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
   font-weight: 700;
-  padding: 10px 12px;
+  font-size: 13px;
+  padding: 8px 10px;
   cursor: pointer;
 }
 
@@ -447,13 +553,14 @@ body {
 
 .admin-status-badge {
   display: inline-flex;
-  margin-bottom: 12px;
-  padding: 6px 10px;
+  margin-bottom: 8px;
+  padding: 4px 9px;
   border-radius: 999px;
-  background: rgba(34, 197, 94, 0.16);
+  background: rgba(34, 197, 94, 0.12);
   color: var(--accent-growth);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
+  letter-spacing: 0.04em;
 }
 
 .admin-launch-grid {
@@ -486,8 +593,48 @@ body {
 }
 
 .admin-note {
-  margin-top: 12px;
+  margin: 4px 0 0 2px;
+  padding-left: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.admin-budget-inline-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.admin-campaign-empty {
+  padding: 12px 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.34);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.admin-campaign-empty p {
+  margin: 0;
   font-size: 13px;
+}
+
+@media (max-width: 1100px) {
+  .admin-campaign-create-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-campaign-side-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-budget-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .admin-campaign-create-row .submit-button {
+    width: 100%;
+  }
 }
 
 .venue-board {
@@ -1095,7 +1242,8 @@ body {
 
 .venue-import-row {
   grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
+  align-items: stretch;
+  gap: 10px;
 }
 
 .venue-import-row button {
@@ -1103,22 +1251,85 @@ body {
   padding: 8px 10px;
 }
 
+.venue-import-row .venue-template-button,
+.venue-import-row .venue-file-picker {
+  min-height: 54px;
+  height: 54px;
+}
+
 .venue-import-row .venue-template-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
   font-size: 12px;
-  padding: 5px 8px;
-  min-height: 30px;
-  border-radius: 8px;
+  padding: 0 14px;
+  border-radius: 12px;
 }
 
-.venue-import-row .investment-input {
-  font-size: 14px;
-  padding: 8px 10px;
+.venue-file-picker {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdff, #f3f7ff);
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
-.venue-import-row .investment-input::file-selector-button {
-  font-size: 14px;
-  padding: 6px 10px;
-  margin-right: 8px;
+.venue-file-picker:hover {
+  border-color: rgba(37, 99, 235, 0.42);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
+}
+
+.venue-file-picker.is-disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.venue-file-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  min-width: 92px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.venue-file-picker .button-loading-content {
+  gap: 6px;
+  font-size: 12px;
+}
+
+.venue-file-picker-name {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.venue-file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.venue-file-picker.is-disabled .venue-file-input {
+  cursor: not-allowed;
 }
 
 .venue-import-status {
@@ -1607,6 +1818,33 @@ body {
 
 .judge-form {
   background: var(--bg-card);
+}
+
+.judge-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.judge-project-grid.crowded {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.admin-budget-input {
+  max-width: 132px;
+}
+
+.campaign-budget-editor {
+  margin: 10px 0 14px;
+}
+
+.campaign-budget-editor label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
 }
 
 .form-group {
@@ -2289,6 +2527,23 @@ body {
 .investment-slider:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.button-loading-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.32);
+  border-top-color: currentColor;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
 }
 
 .judge-submit-actions {
@@ -3129,6 +3384,21 @@ body {
     transform: translateY(-1px);
   }
 
+  .dashboard-presentation-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-roulette-button {
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+  }
+
+  .dashboard-roulette-button:hover {
+    box-shadow: 0 10px 24px rgba(99, 102, 241, 0.28);
+  }
+
   .ranking-controls {
     display: flex;
     gap: 12px;
@@ -3169,6 +3439,82 @@ body {
   .next-btn:hover {
     background: rgba(34, 197, 94, 0.18);
     box-shadow: 0 8px 20px rgba(34, 197, 94, 0.25);
+  }
+
+  .roulette-modal {
+    max-width: 1180px;
+  }
+
+  .roulette-stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 20px 24px;
+  }
+
+  .roulette-card {
+    width: min(100%, 760px);
+    min-height: 320px;
+    padding: 28px 24px;
+    border-radius: 18px;
+    border: 1px solid rgba(96, 165, 250, 0.3);
+    background:
+      radial-gradient(circle at top, rgba(59, 130, 246, 0.2), transparent 52%),
+      rgba(15, 23, 42, 0.78);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    box-shadow: 0 22px 64px rgba(15, 23, 42, 0.4);
+  }
+
+  .roulette-card.animating {
+    animation: roulettePulseIn 0.32s ease-in-out infinite alternate;
+  }
+
+  @keyframes roulettePulseIn {
+    from { transform: scale(0.985) rotate(-0.35deg); }
+    to { transform: scale(1.01) rotate(0.35deg); }
+  }
+
+  .roulette-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 12px;
+    margin-bottom: 14px;
+    border-radius: 999px;
+    background: rgba(234, 179, 8, 0.16);
+    border: 1px solid rgba(234, 179, 8, 0.35);
+    color: #fde68a;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .roulette-card h2 {
+    margin: 0;
+    font-size: 3rem;
+    color: #ffffff;
+    text-shadow: 0 0 20px rgba(191, 219, 254, 0.35);
+  }
+
+  .roulette-amount {
+    margin-top: 16px;
+    font-size: 3.2rem;
+    font-weight: 900;
+    color: #93c5fd;
+    font-family: 'Courier New', monospace;
+    text-shadow: 0 0 22px rgba(147, 197, 253, 0.42);
+  }
+
+  .roulette-card p {
+    margin-top: 16px;
+    max-width: 560px;
+    color: rgba(255, 255, 255, 0.8);
+    line-height: 1.7;
   }
 
   /* ── Podium area ── */
@@ -3410,6 +3756,19 @@ body {
       padding: 0;
     }
 
+    .dashboard-presentation-actions {
+      flex-direction: column;
+    }
+
+    .admin-budget-input {
+      max-width: 100%;
+    }
+
+    .judge-project-grid,
+    .judge-project-grid.crowded {
+      grid-template-columns: 1fr;
+    }
+
     .presentation-header h1 {
       font-size: 2rem;
     }
@@ -3462,6 +3821,19 @@ body {
       grid-template-columns: 70px 1fr 110px;
       gap: 8px;
       padding: 8px 12px;
+    }
+
+    .roulette-card {
+      min-height: 250px;
+      padding: 22px 16px;
+    }
+
+    .roulette-card h2 {
+      font-size: 2rem;
+    }
+
+    .roulette-amount {
+      font-size: 2.2rem;
     }
 
     .presentation-footer {
@@ -3946,4 +4318,219 @@ body {
 .venue-view-projects,
 .member-detail-info {
   border-color: #dbe2ea;
+}
+
+/* === EduMate-inspired dashboard refresh === */
+body {
+  background:
+    radial-gradient(900px 420px at 15% -10%, rgba(3, 106, 255, 0.08), transparent 62%),
+    radial-gradient(760px 380px at 100% 0%, rgba(217, 70, 239, 0.06), transparent 58%),
+    #eef2f7;
+}
+
+.app-container {
+  background:
+    radial-gradient(1000px 460px at 12% -8%, rgba(3, 106, 255, 0.08), transparent 64%),
+    radial-gradient(820px 420px at 92% 0%, rgba(196, 181, 253, 0.12), transparent 60%),
+    #eef2f7;
+}
+
+.navigation {
+  top: 12px;
+  margin: 12px 16px 0;
+  padding: 14px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(10px);
+}
+
+.navigation h1 {
+  font-size: clamp(19px, 1.65vw, 26px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.section,
+.dashboard-chart,
+.dashboard-details,
+.admin-tab-strip,
+.member-detail-info,
+.venue-grid-card,
+.venue-col,
+.venue-sim-shell,
+.venue-view-projects,
+.lobby-card,
+.stat-card,
+.member-card,
+.member-list-row,
+.history-project-row,
+.history-overall-row,
+.campaign-card,
+.admin-hero,
+.admin-campaign-section {
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+}
+
+.section {
+  padding: 24px;
+}
+
+.section h2 {
+  font-size: clamp(23px, 2vw, 31px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.section h3 {
+  font-size: clamp(17px, 1.3vw, 21px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.section p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-ui);
+}
+
+.submit-button,
+.judge-action-button,
+.tutorial-next-button {
+  border-radius: 12px;
+  box-shadow: 0 10px 22px rgba(3, 106, 255, 0.18);
+  background: linear-gradient(135deg, #036aff 0%, #0b5ed7 100%);
+}
+
+.submit-button {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.nav-buttons button,
+.input-group button,
+.admin-history-actions button,
+.venue-card-actions button,
+.campaign-card-header button,
+.admin-modal-actions button:not(.submit-button) {
+  border-radius: 12px;
+  background: #ffffff;
+  color: #344054;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: none;
+}
+
+.nav-buttons button.active,
+.lobby-card.active {
+  background: linear-gradient(135deg, rgba(3, 106, 255, 0.12), rgba(3, 106, 255, 0.08));
+  border-color: rgba(3, 106, 255, 0.28);
+  color: #036aff;
+}
+
+.investment-input,
+.form-group select,
+.input-group select,
+.admin-invite-row input,
+.admin-invite-row .investment-input,
+.member-edit-form .form-group input,
+.member-edit-form .form-group select,
+.admin-modal-textarea {
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  color: #141414;
+  font-size: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.form-group select:focus,
+.investment-input:focus,
+.admin-modal-textarea:focus {
+  outline: none;
+  border-color: rgba(3, 106, 255, 0.45);
+  box-shadow: 0 0 0 4px rgba(3, 106, 255, 0.12);
+}
+
+.investment-input::placeholder,
+.admin-invite-row input::placeholder,
+.admin-modal-textarea::placeholder {
+  color: #98a2b3;
+}
+
+.lobby-card,
+.stat-card,
+.member-card,
+.member-list-row,
+.history-project-row,
+.history-overall-row {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.lobby-card:hover,
+.stat-card:hover,
+.member-card:hover,
+.member-list-row:hover,
+.history-project-row:hover,
+.history-overall-row:hover {
+  transform: translateY(-2px);
+  border-color: rgba(3, 106, 255, 0.18);
+  box-shadow: 0 14px 28px rgba(3, 106, 255, 0.08);
+}
+
+.stat-card h3,
+.admin-note,
+.chart-note,
+.judge-legend-item,
+.venue-col-subtitle,
+.info-row label,
+.form-note,
+.member-tag {
+  color: #667085;
+}
+
+.stat-value,
+.details-table .amount,
+.venue-view-project-amount,
+.history-overall-row span:last-child {
+  color: #036aff;
+}
+
+.details-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.details-table thead {
+  background: #f8fafc;
+}
+
+.details-table th,
+.details-table td {
+  padding: 14px 12px;
+  font-size: 14px;
+}
+
+.details-table tr:hover {
+  background: rgba(3, 106, 255, 0.04);
+}
+
+.dashboard-chart,
+.dashboard-details,
+.judge-form,
+.judge-header,
+.dashboard-header {
+  background: rgba(255, 255, 255, 0.95);
 }

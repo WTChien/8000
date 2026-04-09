@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:9000';
@@ -43,11 +43,13 @@ interface JudgeUIProps {
 }
 
 function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVenue, onSubmitted }: JudgeUIProps) {
-  const TOTAL_BUDGET = 10000;
-  const sliderTicks = Array.from({ length: TOTAL_BUDGET / 500 + 1 }, (_, index) => index * 500);
-  
   // State management
   const [projects, setProjects] = useState<Project[]>([]);
+  const [totalBudget, setTotalBudget] = useState(10000);
+  const sliderTicks = useMemo(
+    () => Array.from({ length: Math.max(2, Math.floor(totalBudget / 500) + 1) }, (_, index) => index * 500),
+    [totalBudget]
+  );
   const [investments, setInvestments] = useState<InvestmentMap>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +74,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       const projectList = response.data.projects;
       
       setProjects(projectList);
+      setTotalBudget(response.data.total_budget || 10000);
 
       // Build defaults first, then merge server-side saved allocations if available.
       const initialInvestments: InvestmentMap = {};
@@ -119,7 +122,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
   };
 
   const getRemainingBudget = () => {
-    return TOTAL_BUDGET - getTotalInvested();
+    return totalBudget - getTotalInvested();
   };
 
   const isDraftValid = useCallback(() => {
@@ -127,8 +130,8 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       return false;
     }
     const totalInvested = Object.values(investments).reduce((a, b) => a + b, 0);
-    return totalInvested <= TOTAL_BUDGET;
-  }, [investments, projects, TOTAL_BUDGET]);
+    return totalInvested <= totalBudget;
+  }, [investments, projects, totalBudget]);
 
   // Check if form is valid
   const isFormValid = useCallback(() => {
@@ -137,8 +140,8 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
     }
 
     const totalInvested = Object.values(investments).reduce((a, b) => a + b, 0);
-    return totalInvested === TOTAL_BUDGET;
-  }, [investments, projects, TOTAL_BUDGET]);
+    return totalInvested === totalBudget;
+  }, [investments, projects, totalBudget]);
 
   // Check if any project has an invalid negative investment.
   const hasNegativeInvestment = useCallback(() => {
@@ -169,13 +172,13 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
     }
 
     if (lockSubmission && !isFormValid()) {
-      setError('鎖定上傳驗證失敗。請確保總額為 10,000 元。');
+      setError(`鎖定上傳驗證失敗。請確保總額為 ${totalBudget.toLocaleString()} 元。`);
       submittingRef.current = false;
       return;
     }
 
     if (!lockSubmission && !isDraftValid()) {
-      setError('暫存上傳失敗：投資總額不可超過 10,000 元。');
+      setError(`暫存上傳失敗：投資總額不可超過 ${totalBudget.toLocaleString()} 元。`);
       submittingRef.current = false;
       return;
     }
@@ -221,7 +224,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       setIsSubmitting(false);
       setSubmitMode(null);
     }
-  }, [authToken, investments, isDraftValid, isFormValid, isLocked, isSubmitting, onSubmitted]);
+  }, [authToken, investments, isDraftValid, isFormValid, isLocked, isSubmitting, onSubmitted, totalBudget]);
 
   if (loading) {
     return (
@@ -246,8 +249,8 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
             <p>
               送出後將立即鎖定本次評分，後續無法再修改任何投資金額。
             </p>
-            <p>
-              請再次確認：所有專題都已分配且總額為 <strong>10,000 元</strong>。
+                <p>
+              請再次確認：所有專題都已分配且總額為 <strong>{totalBudget.toLocaleString()} 元</strong>。
             </p>
             <div className="judge-lock-confirm-actions">
               <button
@@ -291,7 +294,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
         <h2>評審投資介面</h2>
         <p>目前身份：<strong>{authUser.display_name}</strong>（{authUser.role}）</p>
         {authUser.venue_id ? <p>目前會場：<strong>{venueName || authUser.venue_id}</strong></p> : null}
-        <p>請將固定預算 <strong>10,000 元</strong> 投資分配給各個專題</p>
+        <p>請將固定預算 <strong>{totalBudget.toLocaleString()} 元</strong> 投資分配給各個專題</p>
         <p>每聽完一組報告後請按「上傳結果」儲存進度；所有組別聽完、確認配分無誤後，再按「最後結果上傳」鎖定。</p>
         {!isLocked && (
           <div className="nav-buttons" style={{ marginTop: 12 }}>
@@ -304,6 +307,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
       {submitMessage && <div className="success-message">{submitMessage}</div>}
 
       <section className="section judge-form">
+        <div className={`judge-project-grid${projects.length >= 10 ? ' crowded' : ''}`}>
         {projects.map((project) => {
           const currentAmount = investments[project.id] || 0;
           const hasInvested = currentAmount > 0;
@@ -329,7 +333,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
               <input 
                 type="range" 
                 min="0" 
-                max={TOTAL_BUDGET}
+                max={totalBudget}
                 step="500"
                 list={`tick-${project.id}`}
                 value={currentAmount}
@@ -347,7 +351,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
                   <span
                     key={tick}
                     className={tick % 1000 === 0 ? 'major' : 'minor'}
-                    style={{ left: `calc(9px + ${i} * (100% - 18px) / 20)` }}
+                    style={{ left: `calc(9px + ${i} * (100% - 18px) / ${Math.max(sliderTicks.length - 1, 1)})` }}
                   >
                     {tick % 1000 === 0 ? tick.toLocaleString() : ''}
                   </span>
@@ -363,6 +367,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
             </div>
           );
         })}
+        </div>
 
         <div className="budget-summary">
           <div className="summary-item">
@@ -377,12 +382,12 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
           </div>
           <div className="summary-item">
             <span>預算上限：</span>
-            <strong>${TOTAL_BUDGET.toLocaleString()}</strong>
+            <strong>${totalBudget.toLocaleString()}</strong>
           </div>
         </div>
 
         <div style={{ marginTop: 20 }}>
-          {!isLocked && (getTotalInvested() > TOTAL_BUDGET || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= TOTAL_BUDGET) || hasNegativeInvestment()) && (
+          {!isLocked && (getTotalInvested() > totalBudget || getRemainingBudget() > 0 || (!isFormValid() && getTotalInvested() <= totalBudget) || hasNegativeInvestment()) && (
             <div className="validation-message" style={{ marginBottom: 12 }}>
               {getTotalInvested() === 0 ? (
                 <p>❌ 投資總額不可為 0 元，請至少投資一個專題。</p>
@@ -390,14 +395,14 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
               {hasNegativeInvestment() ? (
                 <p>❌ 投資金額不可小於 0 元，請修正後再上傳。</p>
               ) : null}
-              {getTotalInvested() > TOTAL_BUDGET ? (
-                <p>❌ 預算超出上限：超過 <strong>${(getTotalInvested() - TOTAL_BUDGET).toLocaleString()}</strong> 元</p>
+              {getTotalInvested() > totalBudget ? (
+                <p>❌ 預算超出上限：超過 <strong>${(getTotalInvested() - totalBudget).toLocaleString()}</strong> 元</p>
               ) : null}
               {getRemainingBudget() > 0 ? (
                 <p>ℹ️ 目前尚有 <strong>${getRemainingBudget().toLocaleString()}</strong> 元未分配，可先上傳結果；尚未分配的專題可暫時保留為 0 元。</p>
               ) : null}
-              {!isFormValid() && getTotalInvested() <= TOTAL_BUDGET ? (
-                <p>ℹ️ 若要上傳最後結果並鎖定，需滿 10,000 元（可集中投資單一專題）。</p>
+              {!isFormValid() && getTotalInvested() <= totalBudget ? (
+                <p>ℹ️ 若要上傳最後結果並鎖定，需滿 {totalBudget.toLocaleString()} 元（可集中投資單一專題）。</p>
               ) : null}
             </div>
           )}
@@ -408,7 +413,7 @@ function JudgeUI({ authToken, authUser, venueId, venueName, isLocked, onLeaveVen
               className="judge-action-button draft"
               onClick={() => handleSubmit(false)}
               disabled={!isDraftValid() || isSubmitting || isLocked}
-              title={!isDraftValid() && !isLocked ? '投資總額不可超過 10,000 元' : ''}
+              title={!isDraftValid() && !isLocked ? `投資總額不可超過 ${totalBudget.toLocaleString()} 元` : ''}
             >
               {isSubmitting ? '上傳中...' : '上傳結果'}
             </button>

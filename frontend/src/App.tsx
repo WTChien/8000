@@ -191,6 +191,7 @@ interface SystemCampaign {
   started_at: string;
   closed_at?: string | null;
   invite_token?: string | null;
+  judge_budget?: number | null;
   summary?: {
     overall_total_investment?: number;
     venues?: Array<{
@@ -292,6 +293,18 @@ const formatMemberIdentity = (identifier: string, displayName: string): string =
 };
 const isAdminRole = (role?: Role | null): boolean => role === 'super_admin' || role === 'admin';
 const isSuperAdmin = (role?: Role | null): boolean => role === 'super_admin';
+const normalizeBudgetInput = (value: string | number): number => {
+  const numeric = typeof value === 'number'
+    ? value
+    : Number(String(value).replace(/[^\d]/g, ''));
+
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 10000;
+  }
+
+  const rounded = Math.round(numeric / 500) * 500;
+  return Math.max(1000, Math.min(1000000, rounded || 10000));
+};
 const roleLabel = (role?: Role | null): string => {
   if (role === 'super_admin') return '最高管理者';
   if (role === 'admin') return '系所管理者';
@@ -319,6 +332,8 @@ function App() {
   const [members, setMembers] = useState<AdminMember[]>([]);
   const [newVenueName, setNewVenueName] = useState('');
   const [campaignLabelInput, setCampaignLabelInput] = useState('');
+  const [campaignBudgetInput, setCampaignBudgetInput] = useState('10000');
+  const [campaignBudgetDrafts, setCampaignBudgetDrafts] = useState<Record<string, string>>({});
   const [selectedMemberCampaignId, setSelectedMemberCampaignId] = useState<string>('');
   const [adminSystemState, setAdminSystemState] = useState<AdminSystemState>({
     active_campaigns_list: [],
@@ -332,6 +347,7 @@ function App() {
     tone: 'idle',
     text: '請先下載範本，填寫後再上傳。'
   });
+  const [venueImportFileLabel, setVenueImportFileLabel] = useState('未選擇任何檔案');
   const [memberEditName, setMemberEditName] = useState<Record<string, string>>({});
   const [memberEditRole, setMemberEditRole] = useState<Record<string, Role>>({});
   const [setupVenueNameDraft, setSetupVenueNameDraft] = useState('');
@@ -354,6 +370,7 @@ function App() {
   const [pendingVenueDelete, setPendingVenueDelete] = useState<Venue | null>(null);
   const [selectedHistoryCampaign, setSelectedHistoryCampaign] = useState<SystemCampaign | null>(null);
   const [isStartingCampaign, setIsStartingCampaign] = useState(false);
+  const [updatingCampaignBudgetId, setUpdatingCampaignBudgetId] = useState<string | null>(null);
   const [closingCampaignId, setClosingCampaignId] = useState<string | null>(null);
   const [restoringCampaignId, setRestoringCampaignId] = useState<string | null>(null);
   const [permanentDeletingCampaignId, setPermanentDeletingCampaignId] = useState<string | null>(null);
@@ -1156,6 +1173,17 @@ function App() {
         recently_deleted_by_year: response.data.recently_deleted_by_year ?? {}
       };
       setAdminSystemState(normalizedState);
+      setCampaignBudgetDrafts((prev) => {
+        const next = { ...prev };
+        const activeRows = normalizedState.active_campaigns_list ?? [];
+        activeRows.forEach((campaign) => {
+          next[campaign.id] = String(campaign.judge_budget ?? 10000);
+        });
+        if (normalizedState.current_campaign?.id) {
+          next[normalizedState.current_campaign.id] = String(normalizedState.current_campaign.judge_budget ?? 10000);
+        }
+        return next;
+      });
       const activeYear = normalizedState.current_campaign?.year;
       const activeId = normalizedState.current_campaign?.id;
       if (activeYear) {
@@ -1262,9 +1290,18 @@ function App() {
     if (!message) {
       return;
     }
+    setError(null);
     const timer = window.setTimeout(() => setMessage(null), 5000);
     return () => window.clearTimeout(timer);
   }, [message]);
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const timer = window.setTimeout(() => setError(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [error]);
 
   const createVenue = async () => {
     if (!authHeaders || !newVenueName.trim() || isCreatingVenue) {
@@ -1364,7 +1401,7 @@ function App() {
       setImportStatus({ tone: 'loading', text: '正在解析與匯入資料，請稍候...' });
 
       let createdVenueCount = 0;
-      let updatedVenueCount = 0;
+      let updatedProjectCount = 0;
       let assignedJudgeCount = 0;
 
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
@@ -1450,7 +1487,7 @@ function App() {
             { project_names: Array.from(bucket.projects) },
             { headers: authHeaders, params: { campaign_id: selectedMemberCampaignId } }
           );
-          updatedVenueCount += 1;
+          updatedProjectCount += bucket.projects.size;
         }
 
         const judgeNames = Array.from(bucket.judges);
@@ -1482,7 +1519,7 @@ function App() {
       setMessage(`一鍵匯入完成：${byClassroom.size} 個會場`);
       setImportStatus({
         tone: 'success',
-        text: `匯入完成：新增 ${createdVenueCount} 個會場、更新 ${updatedVenueCount} 個會場專題、指派 ${assignedJudgeCount} 位評審。`
+        text: `匯入完成：新增 ${createdVenueCount} 個會場、更新 ${updatedProjectCount} 個專題、指派 ${assignedJudgeCount} 位評審。`
       });
     } catch (err: unknown) {
       setError('匯入會場資料失敗：' + parseAxiosError(err));
@@ -1642,14 +1679,17 @@ function App() {
 
     try {
       setIsStartingCampaign(true);
+      const normalizedBudget = normalizeBudgetInput(campaignBudgetInput);
       await axios.post(
         `${API_BASE_URL}/api/admin/system/start`,
         {
           label: campaignLabelInput.trim() || undefined,
+          judge_budget: normalizedBudget,
         },
         { headers: authHeaders }
       );
-      setMessage('本年度專題模擬投資系統已啟動');
+      setMessage(`本年度專題模擬投資系統已啟動（每位評審 ${normalizedBudget.toLocaleString()} 元）`);
+      setCampaignBudgetInput('10000');
       const latestState = await loadSystemState();
       const activeId = latestState?.current_campaign?.id || '';
       if (activeId) {
@@ -1661,6 +1701,35 @@ function App() {
       setError('啟動場次失敗：' + parseAxiosError(err));
     } finally {
       setIsStartingCampaign(false);
+    }
+  };
+
+  const updateCampaignBudget = async (targetCampaignId: string) => {
+    if (!authHeaders || updatingCampaignBudgetId) {
+      return;
+    }
+
+    try {
+      setUpdatingCampaignBudgetId(targetCampaignId);
+      const normalizedBudget = normalizeBudgetInput(campaignBudgetDrafts[targetCampaignId] ?? '10000');
+      await axios.patch(
+        `${API_BASE_URL}/api/admin/system/settings`,
+        { judge_budget: normalizedBudget },
+        {
+          headers: authHeaders,
+          params: { campaign_id: targetCampaignId },
+        }
+      );
+      setCampaignBudgetDrafts((prev) => ({
+        ...prev,
+        [targetCampaignId]: String(normalizedBudget),
+      }));
+      setMessage(`已更新評審預算為 ${normalizedBudget.toLocaleString()} 元`);
+      await loadSystemState();
+    } catch (err: unknown) {
+      setError('更新場次預算失敗：' + parseAxiosError(err));
+    } finally {
+      setUpdatingCampaignBudgetId(null);
     }
   };
 
@@ -2226,25 +2295,49 @@ function App() {
             </div>
             <div className="admin-campaign-section" data-tutorial="admin-launch-area">
               {(isSuperAdmin(authUser?.role) || !adminHasActiveCampaign) && (
-                <>
-                  <p className="admin-top-panel-sub">每位管理員可同時管理自己的專題會。啟動後會自動產生邀請網址。</p>
+                <div className="admin-campaign-quickstart">
+                  <div className="admin-campaign-quickstart-head">
+                    <span className="admin-quickstart-indicator" aria-hidden="true"></span>
+                    <span>快速建立新場次</span>
+                  </div>
+                  <p className="admin-top-panel-sub">啟動後會自動產生邀請網址。</p>
                   <div className="admin-campaign-create-row">
                     <input
-                      className="investment-input"
+                      className="investment-input admin-campaign-name-input"
                       value={campaignLabelInput}
                       onChange={(e) => setCampaignLabelInput(e.target.value)}
-                      placeholder="場次名稱，例如 資管系畢業專題"
+                      placeholder="請輸入場次名稱"
                       disabled={!canStartAnotherCampaign}
                     />
-                    <button className="submit-button" onClick={startCampaign} disabled={isStartingCampaign || !canStartAnotherCampaign}>
-                      {isStartingCampaign ? '啟動中...' : '啟動新場次'}
-                    </button>
+                    <div className="admin-campaign-side-controls">
+                      <div className="admin-budget-row">
+                        <input
+                          className="investment-input admin-budget-input"
+                          type="number"
+                          min="1000"
+                          step="500"
+                          value={campaignBudgetInput}
+                          onChange={(e) => setCampaignBudgetInput(e.target.value)}
+                          placeholder="請輸入評審預算"
+                          disabled={!canStartAnotherCampaign}
+                        />
+                        <p className="admin-note admin-budget-inline-note">可依系所需求調整本場次評審預算。</p>
+                      </div>
+                      <button className="submit-button admin-campaign-start-btn" onClick={startCampaign} disabled={isStartingCampaign || !canStartAnotherCampaign}>
+                        {isStartingCampaign ? (
+                          <span className="button-loading-content">
+                            <span className="button-spinner" aria-hidden="true"></span>
+                            啟動中...
+                          </span>
+                        ) : '啟動新場次'}
+                      </button>
+                    </div>
                   </div>
-                </>
+                </div>
               )}
               <div className="admin-campaign-grid">
                 {displayedActiveCampaigns.length === 0 && (
-                  <div className="investment-item admin-history-empty">
+                  <div className="admin-history-empty admin-campaign-empty">
                     <p>目前沒有進行中的專題會。</p>
                   </div>
                 )}
@@ -2264,6 +2357,32 @@ function App() {
                         </button>
                       </div>
                       <p className="admin-note">啟動時間：{new Date(campaign.started_at).toLocaleString('zh-Hant-TW')}</p>
+                      <div className="campaign-budget-editor">
+                        <label>請輸入評審預算</label>
+                        <div className="admin-campaign-create-row campaign-budget-row">
+                          <input
+                            className="investment-input admin-budget-input"
+                            type="number"
+                            min="1000"
+                            step="500"
+                            value={campaignBudgetDrafts[campaign.id] ?? String(campaign.judge_budget ?? 10000)}
+                            onChange={(e) => setCampaignBudgetDrafts((prev) => ({ ...prev, [campaign.id]: e.target.value }))}
+                          />
+                          <button
+                            type="button"
+                            className="submit-button admin-budget-update-btn"
+                            onClick={() => updateCampaignBudget(campaign.id)}
+                            disabled={updatingCampaignBudgetId === campaign.id}
+                          >
+                            {updatingCampaignBudgetId === campaign.id ? (
+                              <span className="button-loading-content">
+                                <span className="button-spinner" aria-hidden="true"></span>
+                                更新中...
+                              </span>
+                            ) : '更新預算'}
+                          </button>
+                        </div>
+                      </div>
                       {inviteUrl && (
                         <div className="admin-invite-box">
                           <label>專題會邀請網址</label>
@@ -2900,18 +3019,36 @@ function App() {
                 <button type="button" className="venue-template-button" onClick={downloadVenueTemplate}>
                   下載範本
                 </button>
-                <input
-                  type="file"
-                  className="investment-input"
-                  accept=".xlsx,.xls"
-                  disabled={isBulkImporting || !selectedMemberCampaignId}
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    e.currentTarget.value = '';
-                    if (!file) return;
-                    await importVenueWorkbook(file);
-                  }}
-                />
+                <label
+                  className={`venue-file-picker ${isBulkImporting || !selectedMemberCampaignId ? 'is-disabled' : ''}`}
+                  aria-disabled={isBulkImporting || !selectedMemberCampaignId}
+                >
+                  <span className="venue-file-picker-trigger">
+                    {isBulkImporting ? (
+                      <span className="button-loading-content">
+                        <span className="button-spinner" aria-hidden="true"></span>
+                        匯入中...
+                      </span>
+                    ) : '選擇檔案'}
+                  </span>
+                  <span className="venue-file-picker-name">{isBulkImporting ? '正在解析與匯入資料，請稍候...' : venueImportFileLabel}</span>
+                  <input
+                    type="file"
+                    className="venue-file-input"
+                    accept=".xlsx,.xls"
+                    disabled={isBulkImporting || !selectedMemberCampaignId}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.currentTarget.value = '';
+                      if (!file) {
+                        setVenueImportFileLabel('未選擇任何檔案');
+                        return;
+                      }
+                      setVenueImportFileLabel(file.name);
+                      await importVenueWorkbook(file);
+                    }}
+                  />
+                </label>
               </div>
               <div className={`venue-import-status ${importStatus.tone}`} role="status" aria-live="polite">
                 {importStatus.text}

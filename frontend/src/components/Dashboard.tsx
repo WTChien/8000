@@ -56,7 +56,11 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
   // Presentation mode states
   const [revealedCount, setRevealedCount] = useState(0);
   const [isAutoReveal, setIsAutoReveal] = useState(false);
-  const [sortedProjects, setSortedProjects] = useState<Array<Project & { rank: number }>>([])
+  const [sortedProjects, setSortedProjects] = useState<Array<Project & { rank: number }>>([]);
+  const [isRouletteMode, setIsRouletteMode] = useState(false);
+  const [rouletteDisplayProject, setRouletteDisplayProject] = useState<Project | null>(null);
+  const [rouletteStep, setRouletteStep] = useState(0);
+  const [isRouletteAnimating, setIsRouletteAnimating] = useState(false);
 
   const fetchProjects = useCallback(async (): Promise<void> => {
     try {
@@ -138,6 +142,35 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
     }
   }, [isPresentationMode]);
 
+  useEffect(() => {
+    if (!isRouletteMode || !isRouletteAnimating) {
+      return;
+    }
+
+    const pool = [...projects]
+      .sort((a, b) => b.total_investment - a.total_investment)
+      .slice(3);
+
+    if (pool.length === 0) {
+      setIsRouletteAnimating(false);
+      return;
+    }
+
+    if (rouletteStep >= 18) {
+      setIsRouletteAnimating(false);
+      return;
+    }
+
+    const delay = rouletteStep < 10 ? 100 : rouletteStep < 15 ? 170 : 260;
+    const timer = window.setTimeout(() => {
+      const next = pool[Math.floor(Math.random() * pool.length)];
+      setRouletteDisplayProject(next);
+      setRouletteStep((prev) => prev + 1);
+    }, delay);
+
+    return () => window.clearTimeout(timer);
+  }, [isRouletteAnimating, isRouletteMode, projects, rouletteStep]);
+
   const getColor = (index: number): string => {
     return COLOR_PALETTE[index % COLOR_PALETTE.length];
   };
@@ -161,6 +194,29 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
     });
     return row;
   });
+
+  const rankedByInvestment = [...projects].sort((a, b) => b.total_investment - a.total_investment);
+  const hiddenTopThreeIds = new Set(
+    rankedByInvestment.slice(0, Math.min(3, rankedByInvestment.length)).map((project) => project.id)
+  );
+  const rouletteCandidates = rankedByInvestment.filter((project) => !hiddenTopThreeIds.has(project.id));
+  const isCrowdedVenue = projects.length >= 10;
+
+  const startRouletteAnimation = useCallback(() => {
+    if (rouletteCandidates.length === 0) {
+      setRouletteDisplayProject(null);
+      setRouletteStep(0);
+      setIsRouletteAnimating(false);
+      setIsRouletteMode(true);
+      return;
+    }
+
+    const next = rouletteCandidates[Math.floor(Math.random() * rouletteCandidates.length)];
+    setRouletteDisplayProject(next);
+    setRouletteStep(0);
+    setIsRouletteAnimating(true);
+    setIsRouletteMode(true);
+  }, [rouletteCandidates]);
 
   const hasMissingJudgeBreakdown =
     judgeInvestments.length === 0 && projects.some((project) => project.total_investment > 0);
@@ -247,6 +303,80 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
 
   return (
     <>
+      {isRouletteMode && (
+        <div className="presentation-modal-backdrop" role="dialog" aria-modal="true">
+          <div className="presentation-modal roulette-modal">
+            <div className="presentation-header">
+              <h1>{venueName || venueId} – 隨機戰況輪播</h1>
+              <button
+                className="presentation-exit-btn"
+                onClick={() => {
+                  setIsRouletteMode(false);
+                  setIsRouletteAnimating(false);
+                }}
+                title="關閉隨機輪播"
+              >
+                ✕ 關閉隨機輪播
+              </button>
+            </div>
+
+            <div className="ranking-controls">
+              <button
+                className={`ranking-btn ${isRouletteAnimating ? 'active' : ''}`}
+                onClick={startRouletteAnimation}
+                disabled={projects.length <= 3}
+              >
+                {isRouletteAnimating ? '🎲 輪播中...' : '🎲 再輪播一次'}
+              </button>
+              <button
+                className="ranking-btn next-btn"
+                onClick={() => {
+                  setIsRouletteMode(false);
+                  setIsRouletteAnimating(false);
+                  onPresentationModeChange?.(true);
+                }}
+              >
+                🏆 改看最終戰果
+              </button>
+            </div>
+
+            <div className="roulette-stage">
+              <div className={`roulette-card${isRouletteAnimating ? ' animating' : ''}`}>
+                {rouletteDisplayProject ? (
+                  <>
+                    <span className="roulette-badge">目前隨機抽到</span>
+                    <h2>{rouletteDisplayProject.name}</h2>
+                    <div className="roulette-amount">${rouletteDisplayProject.total_investment.toLocaleString()}</div>
+                    <p>本畫面刻意隱藏目前金額最高的前 3 名，保留最後揭榜的刺激感。</p>
+                  </>
+                ) : (
+                  <>
+                    <span className="roulette-badge">隨機輪播待命</span>
+                    <h2>暫無足夠組別可輪播</h2>
+                    <p>至少需要 4 個組別，系統才會自動隱藏前 3 名並開始輪播。</p>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="presentation-footer">
+              <div className="footer-stat">
+                <span className="footer-label">參與輪播組別</span>
+                <span className="footer-value">{rouletteCandidates.length}</span>
+              </div>
+              <div className="footer-stat">
+                <span className="footer-label">刻意隱藏名次</span>
+                <span className="footer-value">Top 3</span>
+              </div>
+              <div className="footer-stat">
+                <span className="footer-label">最後更新</span>
+                <span className="footer-value">{lastUpdated.toLocaleTimeString('zh-Hant-TW')}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isPresentationMode && (
         <div className="presentation-modal-backdrop" role="dialog" aria-modal="true">
           <div className="presentation-modal">
@@ -363,13 +493,24 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
       <section className="section dashboard-header">
         <h2>{venueName || venueId} - 成果發表戰況</h2>
         <p>最終送出後排名即時更新，準備迎接開獎時刻</p>
-        <button 
-          className="submit-button"
-          onClick={() => onPresentationModeChange?.(true)}
-          style={{ marginTop: 12 }}
-        >
-          顯示最終戰果
-        </button>
+        <div className="dashboard-presentation-actions">
+          <button 
+            type="button"
+            className="submit-button"
+            onClick={() => onPresentationModeChange?.(true)}
+          >
+            顯示最終戰果
+          </button>
+          <button
+            type="button"
+            className="submit-button dashboard-roulette-button"
+            onClick={startRouletteAnimation}
+            disabled={projects.length <= 3}
+            title={projects.length <= 3 ? '至少需要 4 個組別才能隱藏前三名後進行輪播' : '隨機輪播各組目前金額（隱藏前三名）'}
+          >
+            隨機輪播（隱藏前三名）
+          </button>
+        </div>
       </section>
 
       <section className="section dashboard-stats">
@@ -404,17 +545,21 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
             ))}
           </div>
         )}
-        <ResponsiveContainer width="100%" height={400}>
-          <BarChart data={stackedChartData} margin={{ top: 20, right: 30, left: 20, bottom: 44 }} barCategoryGap="40%">
+        <ResponsiveContainer width="100%" height={isCrowdedVenue ? 440 : 400}>
+          <BarChart
+            data={stackedChartData}
+            margin={{ top: 20, right: 30, left: 20, bottom: isCrowdedVenue ? 72 : 44 }}
+            barCategoryGap={isCrowdedVenue ? '18%' : '40%'}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
             <XAxis 
               dataKey="name" 
-              angle={0}
-              textAnchor="middle"
-              height={72}
-              tickMargin={10}
+              angle={isCrowdedVenue ? -18 : 0}
+              textAnchor={isCrowdedVenue ? 'end' : 'middle'}
+              height={isCrowdedVenue ? 100 : 72}
+              tickMargin={isCrowdedVenue ? 18 : 10}
               interval={0}
-              tick={{ fontSize: 16, fontWeight: 800, fontStyle: 'normal', fill: '#334155' }}
+              tick={{ fontSize: isCrowdedVenue ? 12 : 16, fontWeight: 800, fontStyle: 'normal', fill: '#334155' }}
             />
             <YAxis 
               label={{ value: '投資金額 (元)', angle: -90, position: 'insideLeft' }}
@@ -428,7 +573,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                   dataKey={judge.identifier}
                   name={judge.display_name}
                   stackId="judge"
-                  maxBarSize={44}
+                  maxBarSize={isCrowdedVenue ? 34 : 44}
                   radius={index === judgeInvestments.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}
                   fill={getJudgeColor(index)}
                   animationDuration={300}
@@ -438,7 +583,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
             ) : (
               <Bar 
                 dataKey="value" 
-                maxBarSize={44}
+                maxBarSize={isCrowdedVenue ? 34 : 44}
                 radius={[8, 8, 0, 0]}
                 animationDuration={300}
                 isAnimationActive={true}

@@ -105,6 +105,7 @@ TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "48"))
 CODE_TTL_SECONDS = int(os.getenv("CODE_TTL_SECONDS", "300"))
 VERIFIED_ACCESS_DAYS = int(os.getenv("VERIFIED_ACCESS_DAYS", "2"))
 ARCHIVE_RETENTION_DAYS = int(os.getenv("ARCHIVE_RETENTION_DAYS", "30"))
+DEFAULT_JUDGE_BUDGET = int(os.getenv("DEFAULT_JUDGE_BUDGET", "10000"))
 SUPER_ADMIN_NAME = os.getenv("SUPER_ADMIN_NAME", "").strip()
 
 PHONE_PATTERN = re.compile(r"^09\d{8}$")
@@ -269,6 +270,11 @@ class MyInvestmentResponse(BaseModel):
 
 class SystemStartRequest(BaseModel):
     label: Optional[str] = None
+    judge_budget: Optional[int] = None
+
+
+class CampaignSettingsUpdateRequest(BaseModel):
+    judge_budget: int
 
 
 class SystemCampaignResponse(BaseModel):
@@ -280,6 +286,7 @@ class SystemCampaignResponse(BaseModel):
     closed_at: Optional[str] = None
     summary: Optional[dict] = None
     invite_token: Optional[str] = None
+    judge_budget: int = 10000
 
 
 class RecentlyDeletedCampaignResponse(SystemCampaignResponse):
@@ -531,6 +538,31 @@ def campaign_history_for_year(campaign_year: int) -> List[dict]:
             latest_by_id[campaign_id] = item
 
     return sorted(latest_by_id.values(), key=lambda row: str(row.get("closed_at", "")), reverse=True)
+
+
+def normalize_budget_value(value: Optional[int]) -> int:
+    try:
+        normalized = int(value) if value is not None else DEFAULT_JUDGE_BUDGET
+    except (TypeError, ValueError):
+        normalized = DEFAULT_JUDGE_BUDGET
+
+    normalized = max(1000, min(normalized, 1_000_000))
+    if normalized % 500 != 0:
+        normalized = int(round(normalized / 500.0) * 500)
+    return max(1000, normalized)
+
+
+def campaign_budget_for_id(campaign_id: Optional[str] = None) -> int:
+    target_campaign_id = get_member_scope_campaign_id(campaign_id)
+    if target_campaign_id and target_campaign_id in active_campaigns:
+        return normalize_budget_value(active_campaigns[target_campaign_id].get("judge_budget"))
+
+    if target_campaign_id:
+        archived = next((item for item in campaign_history if str(item.get("id", "")) == target_campaign_id), None)
+        if archived:
+            return normalize_budget_value(archived.get("judge_budget"))
+
+    return DEFAULT_JUDGE_BUDGET
 
 
 def normalize_recently_deleted_record(record: dict, campaign_year: int) -> Optional[dict]:
@@ -1450,6 +1482,7 @@ def serialize_campaign(record: dict) -> SystemCampaignResponse:
         closed_at=record.get("closed_at"),
         summary=normalize_campaign_summary(record.get("summary")),
         invite_token=record.get("invite_token"),
+        judge_budget=normalize_budget_value(record.get("judge_budget")),
     )
 
 
@@ -1479,6 +1512,7 @@ def serialize_recently_deleted_campaign(record: dict) -> RecentlyDeletedCampaign
         started_at=str(record.get("started_at", now_utc().isoformat())),
         closed_at=record.get("closed_at"),
         summary=normalize_campaign_summary(record.get("summary")),
+        judge_budget=normalize_budget_value(record.get("judge_budget")),
         deleted_at=str(record.get("deleted_at", now_utc().isoformat())),
         restore_deadline=str(record.get("restore_deadline", deadline.isoformat())),
         days_remaining=days_remaining,
@@ -1886,10 +1920,14 @@ def recently_deleted_grouped_by_year() -> Dict[str, List[RecentlyDeletedCampaign
 
 @app.get("/api/projects", response_model=ProjectsListResponse)
 def get_projects(venue_id: Optional[str] = Query(default=None)):
+    scope_campaign_id = get_member_scope_campaign_id()
     if venue_id:
         validate_venue_exists(venue_id)
+        venue = next((item for item in venues if item["id"] == venue_id), None)
+        scope_campaign_id = str(venue.get("campaign_id", "")) if venue else scope_campaign_id
+
     current_projects = get_projects_data(venue_id)
-    total_budget = 10000
+    total_budget = campaign_budget_for_id(scope_campaign_id)
     current_total = sum(p["total_investment"] for p in current_projects)
 
     judge_investments: List[JudgeInvestmentResponse] = []
@@ -2318,7 +2356,7 @@ def submit_investment(
     user: SessionUser = Depends(require_roles("admin", "judge")),
 ):
     ensure_system_active()
-    total_budget = 10000
+    total_budget = campaign_budget_for_id(user.campaign_id)
     venue_id: Optional[str] = None
 
     for project_id, amount in data.investments.items():
@@ -2621,6 +2659,7 @@ def start_system_campaign(
         "closed_at": None,
         "summary": None,
         "owner_identifier": user.identifier,
+        "judge_budget": normalize_budget_value(data.judge_budget),
     }
     new_campaign["invite_token"] = secrets.token_urlsafe(8)
     active_campaigns[campaign_id] = new_campaign
@@ -2631,6 +2670,22 @@ def start_system_campaign(
     reset_investment_round_state(campaign_id)
     persist_campaign_state(campaign_year)
     return serialize_campaign(new_campaign)
+
+
+@app.patch("/api/admin/system/settings", response_model=SystemCampaignResponse)
+def update_system_campaign_settings(
+    data: CampaignSettingsUpdateRequest,
+    campaign_id: Optional[str] = Query(default=None),
+    user: SessionUser = Depends(require_roles("super_admin", "admin")),
+):
+    target_campaign_id = resolve_manage_campaign_id(user, campaign_id)
+    campaign = active_campaigns.get(target_campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="找不到要更新的進行中場次")
+
+    campaign["judge_budget"] = normalize_budget_value(data.judge_budget)
+    persist_campaign_state(campaign_record_year(campaign))
+    return serialize_campaign(campaign)
 
 
 @app.post("/api/admin/system/close", response_model=SystemCampaignResponse)
