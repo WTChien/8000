@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -59,8 +59,47 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
   const [sortedProjects, setSortedProjects] = useState<Array<Project & { rank: number }>>([]);
   const [isRouletteMode, setIsRouletteMode] = useState(false);
   const [rouletteDisplayProject, setRouletteDisplayProject] = useState<Project | null>(null);
-  const [rouletteStep, setRouletteStep] = useState(0);
   const [isRouletteAnimating, setIsRouletteAnimating] = useState(false);
+
+  // 轮播队列管理
+  const rouletteQueueRef = useRef<Project[]>([]);
+  const rouletteQueueIndexRef = useRef<number>(0);
+  const projectsRef = useRef<Project[]>([]);
+  const lastRouletteProjectIdRef = useRef<string | null>(null);
+  const podiumAreaRef = useRef<HTMLDivElement>(null);
+  const prevRevealedCountRef = useRef(0);
+
+  const buildRouletteQueue = useCallback((sourceProjects: Project[], avoidFirstId?: string | null): Project[] => {
+    if (sourceProjects.length === 0) {
+      return [];
+    }
+
+    const rankedByInvestment = [...sourceProjects].sort((a, b) => b.total_investment - a.total_investment);
+    const topThreeIds = new Set(
+      rankedByInvestment.slice(0, Math.min(3, rankedByInvestment.length)).map((p) => p.id)
+    );
+
+    const candidates = sourceProjects.filter((p) => !topThreeIds.has(p.id));
+    if (candidates.length <= 1) {
+      return candidates;
+    }
+
+    const shuffled = [...candidates];
+    for (let i = shuffled.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // Avoid showing the same project consecutively when a new round starts.
+    if (avoidFirstId && shuffled.length > 1 && shuffled[0].id === avoidFirstId) {
+      const swapIndex = shuffled.findIndex((project) => project.id !== avoidFirstId);
+      if (swapIndex > 0) {
+        [shuffled[0], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[0]];
+      }
+    }
+
+    return shuffled;
+  }, []);
 
   const fetchProjects = useCallback(async (): Promise<void> => {
     try {
@@ -138,38 +177,85 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
   useEffect(() => {
     if (isPresentationMode) {
       setRevealedCount(0);
+      prevRevealedCountRef.current = 0;
       setIsAutoReveal(false);
+      // Scroll to bottom so last-place (bottom) entries are visible first
+      setTimeout(() => {
+        if (podiumAreaRef.current) {
+          podiumAreaRef.current.scrollTop = podiumAreaRef.current.scrollHeight;
+        }
+      }, 50);
     }
   }, [isPresentationMode]);
 
+  // Scroll to the newly revealed item on single-step reveal
   useEffect(() => {
-    if (!isRouletteMode || !isRouletteAnimating) {
+    if (!isPresentationMode || revealedCount === 0) {
+      prevRevealedCountRef.current = revealedCount;
+      return;
+    }
+    const delta = revealedCount - prevRevealedCountRef.current;
+    prevRevealedCountRef.current = revealedCount;
+    if (delta !== 1) return;
+    const revealedProject = sortedProjects[revealedCount - 1];
+    if (!revealedProject || !podiumAreaRef.current) return;
+    setTimeout(() => {
+      const el = podiumAreaRef.current?.querySelector(`[data-rank="${revealedProject.rank}"]`);
+      if (el) {
+        (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 50);
+  }, [revealedCount, isPresentationMode, sortedProjects]);
+
+  useEffect(() => {
+    if (!isRouletteMode || !isRouletteAnimating || projectsRef.current.length === 0) {
       return;
     }
 
-    const pool = [...projects]
-      .sort((a, b) => b.total_investment - a.total_investment)
-      .slice(3);
-
-    if (pool.length === 0) {
-      setIsRouletteAnimating(false);
-      return;
+    if (rouletteQueueRef.current.length === 0) {
+      rouletteQueueRef.current = buildRouletteQueue(projectsRef.current, lastRouletteProjectIdRef.current);
+      rouletteQueueIndexRef.current = 0;
+      const initialProject = rouletteQueueRef.current[0] || null;
+      setRouletteDisplayProject(initialProject);
+      lastRouletteProjectIdRef.current = initialProject?.id || null;
     }
 
-    if (rouletteStep >= 18) {
-      setIsRouletteAnimating(false);
-      return;
-    }
+    const interval = window.setInterval(() => {
+      if (rouletteQueueRef.current.length === 0) {
+        rouletteQueueRef.current = buildRouletteQueue(projectsRef.current, lastRouletteProjectIdRef.current);
+        rouletteQueueIndexRef.current = 0;
+      }
 
-    const delay = rouletteStep < 10 ? 100 : rouletteStep < 15 ? 170 : 260;
-    const timer = window.setTimeout(() => {
-      const next = pool[Math.floor(Math.random() * pool.length)];
-      setRouletteDisplayProject(next);
-      setRouletteStep((prev) => prev + 1);
-    }, delay);
+      if (rouletteQueueRef.current.length === 0) {
+        setRouletteDisplayProject(null);
+        lastRouletteProjectIdRef.current = null;
+        return;
+      }
 
-    return () => window.clearTimeout(timer);
-  }, [isRouletteAnimating, isRouletteMode, projects, rouletteStep]);
+      rouletteQueueIndexRef.current += 1;
+
+      if (rouletteQueueIndexRef.current >= rouletteQueueRef.current.length) {
+        rouletteQueueRef.current = buildRouletteQueue(projectsRef.current, lastRouletteProjectIdRef.current);
+        rouletteQueueIndexRef.current = 0;
+      }
+
+      if (rouletteQueueRef.current.length === 0) {
+        setRouletteDisplayProject(null);
+        lastRouletteProjectIdRef.current = null;
+        return;
+      }
+
+      const nextProject = rouletteQueueRef.current[rouletteQueueIndexRef.current];
+      setRouletteDisplayProject(nextProject);
+      lastRouletteProjectIdRef.current = nextProject.id;
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [buildRouletteQueue, isRouletteMode, isRouletteAnimating]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
 
   const getColor = (index: number): string => {
     return COLOR_PALETTE[index % COLOR_PALETTE.length];
@@ -195,28 +281,39 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
     return row;
   });
 
-  const rankedByInvestment = [...projects].sort((a, b) => b.total_investment - a.total_investment);
-  const hiddenTopThreeIds = new Set(
-    rankedByInvestment.slice(0, Math.min(3, rankedByInvestment.length)).map((project) => project.id)
-  );
-  const rouletteCandidates = rankedByInvestment.filter((project) => !hiddenTopThreeIds.has(project.id));
   const isCrowdedVenue = projects.length >= 10;
 
   const startRouletteAnimation = useCallback(() => {
-    if (rouletteCandidates.length === 0) {
+    if (projects.length === 0) {
       setRouletteDisplayProject(null);
-      setRouletteStep(0);
       setIsRouletteAnimating(false);
       setIsRouletteMode(true);
+      rouletteQueueRef.current = [];
+      rouletteQueueIndexRef.current = 0;
+      lastRouletteProjectIdRef.current = null;
       return;
     }
 
-    const next = rouletteCandidates[Math.floor(Math.random() * rouletteCandidates.length)];
-    setRouletteDisplayProject(next);
-    setRouletteStep(0);
+    const candidateProjects = buildRouletteQueue(projects, lastRouletteProjectIdRef.current);
+
+    if (candidateProjects.length === 0) {
+      setRouletteDisplayProject(null);
+      setIsRouletteAnimating(false);
+      setIsRouletteMode(true);
+      rouletteQueueRef.current = [];
+      rouletteQueueIndexRef.current = 0;
+      lastRouletteProjectIdRef.current = null;
+      return;
+    }
+
+    rouletteQueueRef.current = candidateProjects;
+    rouletteQueueIndexRef.current = 0;
+
+    setRouletteDisplayProject(candidateProjects[0]);
+    lastRouletteProjectIdRef.current = candidateProjects[0].id;
     setIsRouletteAnimating(true);
     setIsRouletteMode(true);
-  }, [rouletteCandidates]);
+  }, [buildRouletteQueue, projects]);
 
   const hasMissingJudgeBreakdown =
     judgeInvestments.length === 0 && projects.some((project) => project.total_investment > 0);
@@ -267,7 +364,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
 
   if (loading) {
     return (
-      <div className="dashboard container">
+      <div className="dashboard container" data-tutorial="dashboard-main">
         <section className="section">
           <h2>現場大螢幕儀表板</h2>
           <p>正在同步 {venueName || venueId} 最新投資數據...</p>
@@ -278,7 +375,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
 
   if (error) {
     return (
-      <div className="dashboard container">
+      <div className="dashboard container" data-tutorial="dashboard-main">
         <section className="section">
           <h2>現場大螢幕儀表板</h2>
           <div className="error-message">{error}</div>
@@ -313,6 +410,9 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                 onClick={() => {
                   setIsRouletteMode(false);
                   setIsRouletteAnimating(false);
+                  rouletteQueueRef.current = [];
+                  rouletteQueueIndexRef.current = 0;
+                  lastRouletteProjectIdRef.current = null;
                 }}
                 title="關閉隨機輪播"
               >
@@ -324,15 +424,18 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
               <button
                 className={`ranking-btn ${isRouletteAnimating ? 'active' : ''}`}
                 onClick={startRouletteAnimation}
-                disabled={projects.length <= 3}
+                disabled={projects.length === 0}
               >
-                {isRouletteAnimating ? '🎲 輪播中...' : '🎲 再輪播一次'}
+                {isRouletteAnimating ? '🎲 輪播中...' : '🎲 開始輪播'}
               </button>
               <button
                 className="ranking-btn next-btn"
                 onClick={() => {
                   setIsRouletteMode(false);
                   setIsRouletteAnimating(false);
+                  rouletteQueueRef.current = [];
+                  rouletteQueueIndexRef.current = 0;
+                  lastRouletteProjectIdRef.current = null;
                   onPresentationModeChange?.(true);
                 }}
               >
@@ -344,16 +447,14 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
               <div className={`roulette-card${isRouletteAnimating ? ' animating' : ''}`}>
                 {rouletteDisplayProject ? (
                   <>
-                    <span className="roulette-badge">目前隨機抽到</span>
                     <h2>{rouletteDisplayProject.name}</h2>
                     <div className="roulette-amount">${rouletteDisplayProject.total_investment.toLocaleString()}</div>
-                    <p>本畫面刻意隱藏目前金額最高的前 3 名，保留最後揭榜的刺激感。</p>
                   </>
                 ) : (
                   <>
                     <span className="roulette-badge">隨機輪播待命</span>
-                    <h2>暫無足夠組別可輪播</h2>
-                    <p>至少需要 4 個組別，系統才會自動隱藏前 3 名並開始輪播。</p>
+                    <h2>準備輪播</h2>
+                    <p>按下按鈕開始隨機輪播。</p>
                   </>
                 )}
               </div>
@@ -361,12 +462,8 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
 
             <div className="presentation-footer">
               <div className="footer-stat">
-                <span className="footer-label">參與輪播組別</span>
-                <span className="footer-value">{rouletteCandidates.length}</span>
-              </div>
-              <div className="footer-stat">
-                <span className="footer-label">刻意隱藏名次</span>
-                <span className="footer-value">Top 3</span>
+                <span className="footer-label">輪播模式</span>
+                <span className="footer-value">已啟用</span>
               </div>
               <div className="footer-stat">
                 <span className="footer-label">最後更新</span>
@@ -414,7 +511,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
               )}
             </div>
 
-            <div className="podium-area">
+            <div className="podium-area" ref={podiumAreaRef}>
               <div className="podium-stage">
                 {podiumSlots.map(({ rank, icon, colorClass }) => {
                   const project = sortedProjects.find((p) => p.rank === rank);
@@ -423,6 +520,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                     <div
                       key={rank}
                       className={`podium-column ${colorClass}${isRevealed ? ' revealed' : ''}${!project ? ' empty' : ''}`}
+                      data-rank={rank}
                     >
                       <div className="podium-info">
                         {isRevealed && project ? (
@@ -455,7 +553,8 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
                       <div
                         key={project.id}
                         className={`below-podium-item${isRevealed ? ' revealed' : ''}`}
-                      >
+                          data-rank={project.rank}
+                        >
                         <span className="bp-rank">第 {project.rank} 名</span>
                         <span className="bp-name">
                           {isRevealed ? project.name : '？？？'}
@@ -489,7 +588,7 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
           </div>
         </div>
       )}
-      <div className="dashboard container">
+      <div className="dashboard container" data-tutorial="dashboard-main">
       <section className="section dashboard-header">
         <h2>{venueName || venueId} - 成果發表戰況</h2>
         <p>最終送出後排名即時更新，準備迎接開獎時刻</p>
@@ -506,9 +605,9 @@ function Dashboard({ venueId, isPresentationMode = false, onPresentationModeChan
             className="submit-button dashboard-roulette-button"
             onClick={startRouletteAnimation}
             disabled={projects.length <= 3}
-            title={projects.length <= 3 ? '至少需要 4 個組別才能隱藏前三名後進行輪播' : '隨機輪播各組目前金額（隱藏前三名）'}
+            title={projects.length <= 3 ? '至少需要 4 個組別才能進行輪播' : '隨機輪播各組目前金額'}
           >
-            隨機輪播（隱藏前三名）
+            隨機輪播
           </button>
         </div>
       </section>

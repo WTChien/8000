@@ -2160,20 +2160,24 @@ def login_with_name(data: NameLoginRequest):
 
     existing = by_identifier or by_name
     if not existing:
-        raise HTTPException(status_code=404, detail="帳號不存在，請先由管理員匯入")
+        raise HTTPException(status_code=404, detail="帳號不存在，評審需先由管理員新增後才能登入")
 
     identifier = str(existing.get("identifier", "")).strip()
     if not identifier:
         raise HTTPException(status_code=400, detail="帳號資料異常，請聯絡系統管理員")
 
     role = normalize_role(existing.get("role") if existing else "judge")
+    if role not in {"judge", "admin", "super_admin"}:
+        raise HTTPException(status_code=403, detail="此帳號類型不支援此登入方式")
+
+    registered_display_name = normalize_display_name(str(existing.get("display_name", raw_login_key)))
     is_global = role in {"super_admin", "admin"}
     if role == "super_admin":
         ensure_single_super_admin(identifier)
     access_until = now_utc() + timedelta(days=VERIFIED_ACCESS_DAYS)
     upsert_verified_user(
         identifier,
-        display_name,
+        registered_display_name,
         role,
         access_until,
         campaign_year=None if is_global else scope_year,
@@ -2190,7 +2194,7 @@ def login_with_name(data: NameLoginRequest):
         user_id=identifier,
         identifier=identifier,
         role=normalize_role(record.get("role", role)),
-        display_name=str(record.get("display_name", display_name)),
+        display_name=str(record.get("display_name", registered_display_name)),
         venue_id=record.get("assigned_venue_id"),
         campaign_year=None if is_global else scope_year,
         campaign_id=None if is_global else scope_campaign_id,
@@ -2720,6 +2724,16 @@ def close_system_campaign(
         if str(owner_record.get("managed_campaign_id", "")) == closing_id:
             set_verified_user_managed_campaign(owner_identifier, None)
 
+    # Clear campaign assignment for all admin records bound to this closed campaign.
+    for account in list_verified_users():
+        if normalize_role(account.get("role", "judge")) != "admin":
+            continue
+        if str(account.get("managed_campaign_id", "") or "") != closing_id:
+            continue
+        identifier = str(account.get("identifier", ""))
+        if identifier:
+            set_verified_user_managed_campaign(identifier, None)
+
     prev_history = campaign_history_for_year(closing_year)
     full_history = [h for h in prev_history if str(h.get("id", "")) != closing_id] + [closed]
     persist_campaign_state(closing_year, history_override=full_history)
@@ -2888,27 +2902,38 @@ def list_members(
     scope_campaign_id = get_member_scope_campaign_id(campaign_id)
     scope_year = resolve_campaign_year_by_id(scope_campaign_id, year) if scope_campaign_id else get_member_scope_year(year)
 
+    def normalize_managed_campaign_id(raw_value: object) -> Optional[str]:
+        value = str(raw_value or "").strip()
+        if not value:
+            return None
+        # Treat closed/deleted campaign bindings as unassigned in member management.
+        if value not in active_campaigns:
+            return None
+        return value
+
     # super_admin with no campaign_id: return all manageable members across scopes.
     if user.role == "super_admin" and not scope_campaign_id:
         all_users = list_verified_users()
-        result = [
-            {
-                "identifier": account.get("identifier"),
-                "display_name": account.get("display_name"),
-                "role": normalize_role(account.get("role", "judge")),
-                "assigned_venue_id": account.get("assigned_venue_id"),
-                "manager_identifier": account.get("manager_identifier"),
-                "managed_campaign_id": account.get("managed_campaign_id"),
-                "is_voted": bool(account.get("is_voted", False)),
-                "campaign_year": account.get("campaign_year"),
-                "campaign_id": account.get("campaign_id"),
-            }
-            for account in all_users
-            if (
-                str(account.get("identifier", "")).startswith("name::")
-                and normalize_role(account.get("role", "judge")) in {"admin", "judge"}
+        result = []
+        for account in all_users:
+            if not str(account.get("identifier", "")).startswith("name::"):
+                continue
+            role = normalize_role(account.get("role", "judge"))
+            if role not in {"admin", "judge"}:
+                continue
+            result.append(
+                {
+                    "identifier": account.get("identifier"),
+                    "display_name": account.get("display_name"),
+                    "role": role,
+                    "assigned_venue_id": account.get("assigned_venue_id"),
+                    "manager_identifier": account.get("manager_identifier"),
+                    "managed_campaign_id": normalize_managed_campaign_id(account.get("managed_campaign_id")) if role == "admin" else None,
+                    "is_voted": bool(account.get("is_voted", False)),
+                    "campaign_year": account.get("campaign_year"),
+                    "campaign_id": account.get("campaign_id"),
+                }
             )
-        ]
         return {"members": result, "year": scope_year, "campaign_id": None}
 
     # Normal behavior: return campaign-scoped judge members.
@@ -2938,7 +2963,7 @@ def list_members(
             continue
         if normalize_role(account.get("role", "judge")) != "admin":
             continue
-        managed_campaign_id = str(account.get("managed_campaign_id", "") or "")
+        managed_campaign_id = normalize_managed_campaign_id(account.get("managed_campaign_id")) or ""
         identifier = str(account.get("identifier", ""))
         if scope_campaign_id and managed_campaign_id != scope_campaign_id and identifier != campaign_owner_identifier:
             continue

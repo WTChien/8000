@@ -14,10 +14,12 @@ type TutorialMode = 'admin' | 'judge';
 type Role = 'super_admin' | 'admin' | 'judge';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:9000';
+const NO_CAMPAIGN_FILTER = '__NO_CAMPAIGN__';
 const TOKEN_STORAGE_KEY = 'fundthepitch_auth_token';
 const USER_STORAGE_KEY = 'fundthepitch_auth_user';
 const DISPLAY_NAME_SESSION_KEY = 'fundthepitch_display_name';
 const TUTORIAL_STORAGE_PREFIX = 'fundthepitch_tutorial_seen_v1';
+const AUTO_TUTORIAL_DELAY_MS = 5000;
 
 interface TutorialStep {
   title: string;
@@ -91,35 +93,35 @@ const ADMIN_TUTORIAL_STEPS: TutorialStep[] = [
 
 const JUDGE_TUTORIAL_STEPS: TutorialStep[] = [
   {
-    title: '評審教學 1/5：先選會場',
-    description: '先到「會場選擇」查看各會場資訊，選定後加入該會場。',
-    focusView: 'lobby',
-    highlightSelector: '[data-tutorial="lobby-section"]',
-    mockKey: 'judge-lobby',
-    maxSpotlightAreaRatio: 0.24,
-    spotlightPadding: 8
-  },
-  {
-    title: '評審教學 2/5：進入投資頁',
-    description: '加入會場後切到「評審投資」，為各專題輸入投資金額。',
+    title: '評審教學 1/5：直接從投資頁開始',
+    description: '登入後會直接進到「評審投資」，在這裡查看目前身分、會場與可分配的總預算。',
     focusView: 'judge',
     highlightSelector: '[data-tutorial="judge-section"]',
-    mockKey: 'judge-invest',
+    mockKey: 'judge-invest-home',
     maxSpotlightAreaRatio: 0.24,
     spotlightPadding: 8
   },
   {
-    title: '評審教學 3/5：先暫存再調整',
-    description: '可先按「上傳結果」暫存進度，不必一次配滿 10,000。',
+    title: '評審教學 2/5：用加減快速調整',
+    description: '每個專題都能用紅色「-」與綠色「+」按鈕調整金額。按一下是 100，按住會連續增減。',
     focusView: 'judge',
-    highlightSelector: '.judge-submit-actions',
+    highlightSelector: '[data-tutorial="judge-adjust-controls"]',
+    mockKey: 'judge-adjust',
+    maxSpotlightAreaRatio: 0.24,
+    spotlightPadding: 8
+  },
+  {
+    title: '評審教學 3/5：停止後自動暫存',
+    description: '只要更動金額，系統會在停止操作 3 秒後自動暫存，不需要手動按暫存按鈕。',
+    focusView: 'judge',
+    highlightSelector: '[data-tutorial="judge-auto-save"]',
     mockKey: 'judge-draft',
     maxSpotlightAreaRatio: 0.14,
     spotlightPadding: 10
   },
   {
     title: '評審教學 4/5：最後鎖定送出',
-    description: '確認總額 10,000 後按「最後結果上傳」，送出後會鎖定，無法自行修改。',
+    description: '確認全部預算都已分配完成後按「最後結果上傳」，送出後會鎖定，無法自行修改。',
     focusView: 'judge',
     highlightSelector: '.judge-submit-actions .judge-action-button.lock',
     mockKey: 'judge-lock',
@@ -130,10 +132,10 @@ const JUDGE_TUTORIAL_STEPS: TutorialStep[] = [
     title: '評審教學 5/5：查看戰況',
     description: '到「會場投資戰況」可即時查看各會場與專題累積投資趨勢。',
     focusView: 'dashboard',
-    highlightSelector: '[data-tutorial="dashboard-section"]',
+    highlightSelector: '[data-tutorial="judge-nav-dashboard"]',
     mockKey: 'judge-dashboard',
-    maxSpotlightAreaRatio: 0.26,
-    spotlightPadding: 8
+    maxSpotlightAreaRatio: 0.1,
+    spotlightPadding: 10
   }
 ];
 
@@ -392,6 +394,7 @@ function App() {
   const [isEditingMember, setIsEditingMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRole, setNewMemberRole] = useState<'judge' | 'admin'>('judge');
+  const [newMemberCampaignId, setNewMemberCampaignId] = useState<string>('');
   const [isCreatingMember, setIsCreatingMember] = useState(false);
   const [memberEditManager, setMemberEditManager] = useState<Record<string, string>>({});
   const [memberSortTag, setMemberSortTag] = useState<MemberSortTag>('role');
@@ -401,6 +404,7 @@ function App() {
   const [tutorialMode, setTutorialMode] = useState<TutorialMode | null>(null);
   const [tutorialStepIndex, setTutorialStepIndex] = useState(0);
   const [tutorialSpotlightRect, setTutorialSpotlightRect] = useState<TutorialSpotlightRect | null>(null);
+  const [isJudgeTutorialNoticeOpen, setIsJudgeTutorialNoticeOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -417,6 +421,7 @@ function App() {
   const adminVenuesSectionRef = useRef<HTMLElement | null>(null);
   const userCampaignIdRef = useRef<string | undefined>(undefined);
   const inviteTokenRef = useRef<string | null>(null);
+  const autoTutorialShownKeyRef = useRef<string | null>(null);
 
   const authHeaders = useMemo(() => {
     if (!authToken) {
@@ -627,6 +632,7 @@ function App() {
   }, [tutorialMode]);
 
   const currentTutorialStep = tutorialSteps[tutorialStepIndex] || null;
+  const isFinalTutorialStep = tutorialStepIndex >= tutorialSteps.length - 1;
   const tutorialBackdropStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!tutorialSpotlightRect) {
       return undefined;
@@ -641,8 +647,15 @@ function App() {
   }, [tutorialSpotlightRect]);
 
   const parseAxiosError = useCallback((err: unknown): string => {
-    if (!axios.isAxiosError(err)) {
-      return '發生錯誤，請聯絡系統管理員';
+    if (axios.isAxiosError(err)) {
+      const detail = err.response?.data?.detail;
+      if (detail) return String(detail);
+      const status = err.response?.status;
+      if (status === 401) return '登入已失效，請重新登入';
+      if (status === 403) return '權限不足';
+      if (status === 404) return '找不到資源';
+      if (status) return `伺服器錯誤 (${status})`;
+      return '無法連線至伺服器，請確認後端是否啟動';
     }
     return '發生錯誤，請聯絡系統管理員';
   }, []);
@@ -680,15 +693,23 @@ function App() {
     loadVenues();
   }, [loadVenues]);
 
-  const getTutorialStorageKey = useCallback((mode: TutorialMode, identifier: string) => {
-    return `${TUTORIAL_STORAGE_PREFIX}:${mode}:${identifier}`;
+  const judgeTutorialScopeId = judgeStatus?.campaign_id || authUser?.campaign_id || inviteCampaign?.id || 'no-campaign';
+  // Admin tutorial is account-scoped: shown once per account instance, not per campaign.
+  const adminTutorialScopeId = authUser?.user_id || authUser?.identifier || 'no-account';
+
+  const resolveTutorialScopeId = useCallback((mode: TutorialMode) => {
+    return mode === 'admin' ? adminTutorialScopeId : judgeTutorialScopeId;
+  }, [adminTutorialScopeId, judgeTutorialScopeId]);
+
+  const getTutorialStorageKey = useCallback((mode: TutorialMode, identifier: string, scopeId: string) => {
+    return `${TUTORIAL_STORAGE_PREFIX}:${mode}:${identifier}:${scopeId}`;
   }, []);
 
-  const markTutorialSeen = useCallback((mode: TutorialMode, identifier?: string | null) => {
+  const markTutorialSeen = useCallback((mode: TutorialMode, identifier?: string | null, scopeId?: string) => {
     if (!identifier) {
       return;
     }
-    localStorage.setItem(getTutorialStorageKey(mode, identifier), '1');
+    localStorage.setItem(getTutorialStorageKey(mode, identifier, scopeId || 'no-campaign'), '1');
   }, [getTutorialStorageKey]);
 
   const applyTutorialStepFocus = useCallback((step: TutorialStep) => {
@@ -728,11 +749,11 @@ function App() {
 
   const closeTutorial = useCallback((markAsSeen: boolean) => {
     if (markAsSeen && tutorialMode) {
-      markTutorialSeen(tutorialMode, authUser?.identifier);
+      markTutorialSeen(tutorialMode, authUser?.identifier, resolveTutorialScopeId(tutorialMode));
     }
     setIsTutorialOpen(false);
     setTutorialSpotlightRect(null);
-  }, [authUser?.identifier, markTutorialSeen, tutorialMode]);
+  }, [authUser?.identifier, markTutorialSeen, resolveTutorialScopeId, tutorialMode]);
 
   const goToNextTutorialStep = useCallback(() => {
     if (!tutorialMode) {
@@ -741,6 +762,14 @@ function App() {
     const lastIndex = tutorialSteps.length - 1;
     if (tutorialStepIndex >= lastIndex) {
       closeTutorial(true);
+      if (tutorialMode === 'judge') {
+        setCurrentView('judge');
+        setIsJudgeTutorialNoticeOpen(true);
+      }
+      if (tutorialMode === 'admin') {
+        setCurrentView('admin');
+        setAdminTab('venues');
+      }
       return;
     }
     setTutorialStepIndex((prev) => prev + 1);
@@ -796,7 +825,11 @@ function App() {
         if (currentTutorialStep.highlightSelector.includes('admin-tab-')) {
           setIsAdminTabsOpen(true);
         }
-        if (currentTutorialStep.highlightSelector.includes('top-nav') || currentTutorialStep.highlightSelector.includes('navigation')) {
+        if (
+          currentTutorialStep.highlightSelector.includes('top-nav') ||
+          currentTutorialStep.highlightSelector.includes('navigation') ||
+          currentTutorialStep.highlightSelector.includes('judge-nav-')
+        ) {
           setIsMobileNavOpen(true);
         }
       }
@@ -826,13 +859,14 @@ function App() {
       }
       setTutorialSpotlightRect(null);
     };
-  }, [currentTutorialStep, isTutorialOpen]);
+  }, [currentTutorialStep, isTutorialOpen, isMobileNavOpen, isAdminTabsOpen]);
 
   useEffect(() => {
     if (!authUser) {
       setIsTutorialOpen(false);
       setTutorialMode(null);
       setTutorialStepIndex(0);
+      autoTutorialShownKeyRef.current = null;
       return;
     }
 
@@ -840,17 +874,32 @@ function App() {
       setIsTutorialOpen(false);
       setTutorialMode(null);
       setTutorialStepIndex(0);
+      autoTutorialShownKeyRef.current = null;
       return;
     }
 
     const defaultMode: TutorialMode = isAdminRole(authUser.role) ? 'admin' : 'judge';
-    const seen = localStorage.getItem(getTutorialStorageKey(defaultMode, authUser.identifier)) === '1';
-    if (!seen) {
+    const scopeId = resolveTutorialScopeId(defaultMode);
+    const autoKey = `${authUser.identifier}:${defaultMode}:${scopeId}`;
+    const seen = localStorage.getItem(getTutorialStorageKey(defaultMode, authUser.identifier, scopeId)) === '1';
+    if (seen || isTutorialOpen || autoTutorialShownKeyRef.current === autoKey) {
+      if (seen) {
+        autoTutorialShownKeyRef.current = autoKey;
+      }
+      return;
+    }
+
+    autoTutorialShownKeyRef.current = autoKey;
+    const timer = window.setTimeout(() => {
       setTutorialMode(defaultMode);
       setTutorialStepIndex(0);
       setIsTutorialOpen(true);
-    }
-  }, [authUser, getTutorialStorageKey]);
+    }, AUTO_TUTORIAL_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [authUser, getTutorialStorageKey, isTutorialOpen, resolveTutorialScopeId]);
 
   useEffect(() => {
     if (!authUser || isAdminRole(authUser.role)) {
@@ -929,7 +978,7 @@ function App() {
   }, [authHeaders, refreshJudgeStatus]);
 
   useEffect(() => {
-    if (isAdminRole(authUser?.role) && !isSuperAdmin(authUser?.role) && !isCampaignActive && currentView === 'lobby') {
+    if (isAdminRole(authUser?.role) && !isSuperAdmin(authUser?.role) && (currentView === 'lobby' || currentView === 'judge')) {
       setCurrentView('admin');
     }
   }, [authUser?.role, currentView, isCampaignActive]);
@@ -1122,7 +1171,9 @@ function App() {
     if (!authHeaders || !isAdminRole(authUser?.role)) {
       return;
     }
-    const campaignId = campaignIdOverride || selectedMemberCampaignIdRef.current || activeCampaignIdRef.current || '';
+    const requestedCampaignId = campaignIdOverride ?? selectedMemberCampaignIdRef.current ?? activeCampaignIdRef.current ?? '';
+    const isNoCampaignFilter = requestedCampaignId === NO_CAMPAIGN_FILTER;
+    const campaignId = isNoCampaignFilter ? '' : requestedCampaignId;
     // super_admin can fetch members without a campaign (returns global admin members)
     if (!campaignId && !isSuperAdmin(authUser?.role)) {
       setMembers([]);
@@ -1132,10 +1183,18 @@ function App() {
       setIsLoadingMembers(true);
       const response = await axios.get<AdminMembersResponse>(`${API_BASE_URL}/api/admin/members`, {
         headers: authHeaders,
-        params: { campaign_id: campaignId }
+        params: campaignId ? { campaign_id: campaignId } : undefined
       });
-      setMembers(response.data.members);
-      if (response.data.campaign_id) {
+      const loadedMembers = isNoCampaignFilter
+        ? response.data.members.filter((member) => {
+          if (member.role === 'admin') {
+            return !member.managed_campaign_id;
+          }
+          return !member.campaign_id;
+        })
+        : response.data.members;
+      setMembers(loadedMembers);
+      if (!isSuperAdmin(authUser?.role) && response.data.campaign_id) {
         setSelectedMemberCampaignId(response.data.campaign_id);
       } else if (isSuperAdmin(authUser?.role) && !isCampaignActiveRef.current) {
         // super_admin fetched global admins — no campaign_id to set
@@ -1143,7 +1202,7 @@ function App() {
       const names: Record<string, string> = {};
       const roles: Record<string, Role> = {};
       const managers: Record<string, string> = {};
-      for (const member of response.data.members) {
+      for (const member of loadedMembers) {
         names[member.identifier] = member.display_name;
         roles[member.identifier] = member.role;
         managers[member.identifier] = member.manager_identifier || '';
@@ -1248,14 +1307,18 @@ function App() {
   }, [authUser?.role, currentView, loadAdminData]);
 
   useEffect(() => {
-    if (adminTab === 'venues' && selectedMemberCampaignId) {
+    if (adminTab === 'venues' && selectedMemberCampaignId && selectedMemberCampaignId !== NO_CAMPAIGN_FILTER) {
       loadMembers(selectedMemberCampaignId);
       loadVenues(selectedMemberCampaignId);
     }
   }, [adminTab, selectedMemberCampaignId, loadMembers, loadVenues]);
 
   useEffect(() => {
-    if (adminTab !== 'venues' || selectedMemberCampaignId || venueCampaignOptions.length === 0) {
+    if (
+      adminTab !== 'venues'
+      || (selectedMemberCampaignId && selectedMemberCampaignId !== NO_CAMPAIGN_FILTER)
+      || venueCampaignOptions.length === 0
+    ) {
       return;
     }
     setSelectedMemberCampaignId(venueCampaignOptions[0].id);
@@ -1266,10 +1329,12 @@ function App() {
       return;
     }
     if (isSuperAdmin(authUser?.role)) {
-      loadMembers('');
+      loadMembers(selectedMemberCampaignId || '');
       return;
     }
-    const scopeCampaignId = selectedMemberCampaignId || activeCampaign?.id || '';
+    const scopeCampaignId = selectedMemberCampaignId === NO_CAMPAIGN_FILTER
+      ? ''
+      : (selectedMemberCampaignId || activeCampaign?.id || '');
     if (scopeCampaignId) {
       loadMembers(scopeCampaignId);
       return;
@@ -2104,9 +2169,14 @@ function App() {
       return;
     }
 
-    const isGlobalAdminMode = isSuperAdmin(authUser?.role) && !isCampaignActive;
+    const isSuperAdminUser = isSuperAdmin(authUser?.role);
+    const isGlobalAdminMode = isSuperAdminUser && !isCampaignActive;
     const targetRole: 'judge' | 'admin' = isGlobalAdminMode ? 'admin' : newMemberRole;
-    const targetCampaignId = selectedMemberCampaignId || activeCampaign?.id || '';
+    const normalizedMemberCampaignId = selectedMemberCampaignId === NO_CAMPAIGN_FILTER ? '' : selectedMemberCampaignId;
+    const normalizedNewMemberCampaignId = newMemberCampaignId === NO_CAMPAIGN_FILTER ? '' : newMemberCampaignId;
+    const targetCampaignId = isSuperAdminUser
+      ? normalizedNewMemberCampaignId
+      : (normalizedMemberCampaignId || activeCampaign?.id || '');
 
     if (targetRole === 'judge' && !targetCampaignId) {
       setError('新增評審前請先選擇場次，或先啟動場次');
@@ -2120,15 +2190,18 @@ function App() {
         { display_name: displayName, role: targetRole },
         {
           headers: authHeaders,
-          params: targetRole === 'admin' ? undefined : { campaign_id: targetCampaignId },
+          params: targetCampaignId ? { campaign_id: targetCampaignId } : undefined,
         }
       );
       setMessage(targetRole === 'admin' ? '系所管理者已新增' : '評審成員已新增');
       setNewMemberName('');
+      if (isSuperAdminUser) {
+        setNewMemberCampaignId('');
+      }
       if (!isGlobalAdminMode) {
         setNewMemberRole('judge');
       }
-      await loadMembers(targetRole === 'admin' ? '' : targetCampaignId);
+      await loadMembers(selectedMemberCampaignId || '');
     } catch (err: unknown) {
       setError('新增成員失敗：' + parseAxiosError(err));
     } finally {
@@ -2142,8 +2215,8 @@ function App() {
         <h2>登入</h2>
         <p>
           {inviteCampaign
-            ? `你正在進入 ${inviteCampaign.year} 年 ${inviteCampaign.label} 專題會，請輸入員編或姓名登入。`
-            : '請先輸入員編或姓名登入（帳號需由管理員事先匯入）。'}
+            ? `你正在進入 ${inviteCampaign.year} 年 ${inviteCampaign.label} 專題會，請輸入員編或姓名登入。評審需先由管理員新增後才能進入。`
+            : '請先輸入員編或姓名登入。評審帳號需由管理員事先新增。'}
         </p>
         {inviteCampaign && (
           <div className="invite-banner">
@@ -2616,11 +2689,13 @@ function App() {
                   onChange={(e) => {
                     const id = e.target.value;
                     setSelectedMemberCampaignId(id);
-                    if (id) loadMembers(id);
-                    else setMembers([]);
+                    loadMembers(id);
                   }}
                 >
                   <option value="">請選擇場次</option>
+                  {isSuperAdmin(authUser?.role) && (
+                    <option value={NO_CAMPAIGN_FILTER}>無場次</option>
+                  )}
                   {campaignOptions.map((campaign) => (
                     <option key={campaign.id} value={campaign.id}>
                       {campaign.year} / {campaign.label}{campaign.status === 'closed' ? '（已封存）' : ''}
@@ -2660,7 +2735,7 @@ function App() {
               const isAdminMember = member.role === 'admin';
               const campaignTag = campaignInfo
                 ? `${campaignInfo.year} / ${campaignInfo.label}`
-                : (campaignId || '未分配場次');
+                : '未分配場次';
               const venueTag = member.assigned_venue_id || '未分配會場';
               const lockTag = member.is_voted ? '已鎖定' : '可編輯';
               return (
@@ -2691,17 +2766,13 @@ function App() {
         )}
 
         <div className="form-group" style={{ marginTop: 16 }}>
-          <label>
-            {isSuperAdmin(authUser?.role) && !isCampaignActive
-              ? '新增系所管理者'
-              : '新增成員'}
-          </label>
+          <label>新增成員</label>
           <div className="input-group">
             <input
               className="investment-input"
               value={newMemberName}
               onChange={(e) => setNewMemberName(e.target.value)}
-              placeholder={isSuperAdmin(authUser?.role) && !isCampaignActive ? '例如：資管系主任' : '例如：王評審'}
+              placeholder={isSuperAdmin(authUser?.role) && !isCampaignActive ? '例如：商管系主任' : '例如：王評審'}
             />
             {isSuperAdmin(authUser?.role) && (
               <select
@@ -2711,6 +2782,20 @@ function App() {
               >
                 <option value="judge">評審</option>
                 <option value="admin">系所管理者</option>
+              </select>
+            )}
+            {isSuperAdmin(authUser?.role) && displayedActiveCampaigns.length > 0 && (
+              <select
+                className="investment-input"
+                value={newMemberCampaignId}
+                onChange={(e) => setNewMemberCampaignId(e.target.value)}
+              >
+                <option value="">不加入任何場次</option>
+                {displayedActiveCampaigns.map((campaign) => (
+                  <option key={`create-member-campaign-${campaign.id}`} value={campaign.id}>
+                    加入 {campaign.year} / {campaign.label}
+                  </option>
+                ))}
               </select>
             )}
             <button
@@ -3718,6 +3803,7 @@ function App() {
   const effectiveVenueId = authUser?.venue_id || selectedVenueId || dashboardVenueId || venues[0]?.id || '';
   const canSeeDashboard = (isCampaignActive || isSuperAdminUser) && Boolean(dashboardVenueId || venues[0]?.id);
   const joinedVenueId = judgeStatus?.assigned_venue_id || authUser?.venue_id || null;
+  const canAccessJudgeScreens = !isAdminRole(authUser?.role) || isSuperAdminUser;
 
   return (
     <div className="app-container">
@@ -3743,7 +3829,7 @@ function App() {
         </div>
         {authUser && (
           <div className={`nav-buttons top-nav-buttons ${isMobileNavOpen ? 'open' : ''}`}>
-            <div className="top-nav-buttons-inner">
+            <div className={`top-nav-buttons-inner ${!isAdminRole(authUser.role) ? 'judge-nav-grid' : ''}`}>
               {isAdminRole(authUser.role) && (
                 <button
                   onClick={() => {
@@ -3752,31 +3838,36 @@ function App() {
                   }}
                   className={currentView === 'admin' ? 'active' : ''}
                 >
-                  管理員
+                  後台管理
+                </button>
+              )}
+              {canAccessJudgeScreens && (
+                <button
+                  disabled={!isCampaignActive && !isSuperAdminUser}
+                  onClick={() => {
+                    setCurrentView('lobby');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={currentView === 'lobby' ? 'active' : ''}
+                >
+                  會場選擇
+                </button>
+              )}
+              {canAccessJudgeScreens && (
+                <button
+                  disabled={(!isCampaignActive || !hasVenue) && !isSuperAdminUser}
+                  onClick={() => {
+                    setCurrentView('judge');
+                    setIsMobileNavOpen(false);
+                  }}
+                  className={currentView === 'judge' ? 'active' : ''}
+                >
+                  評審投資
                 </button>
               )}
               <button
                 disabled={!isCampaignActive && !isSuperAdminUser}
-                onClick={() => {
-                  setCurrentView('lobby');
-                  setIsMobileNavOpen(false);
-                }}
-                className={currentView === 'lobby' ? 'active' : ''}
-              >
-                會場選擇
-              </button>
-              <button
-                disabled={(!isCampaignActive || !hasVenue) && !isSuperAdminUser}
-                onClick={() => {
-                  setCurrentView('judge');
-                  setIsMobileNavOpen(false);
-                }}
-                className={currentView === 'judge' ? 'active' : ''}
-              >
-                評審投資
-              </button>
-              <button
-                disabled={!isCampaignActive && !isSuperAdminUser}
+                data-tutorial="judge-nav-dashboard"
                 onClick={() => {
                   setCurrentView('dashboard');
                   setIsMobileNavOpen(false);
@@ -3913,10 +4004,12 @@ function App() {
               </span>
             </div>
             <p className="tutorial-text">{currentTutorialStep.description}</p>
-            <div className="tutorial-actions">
-              <button type="button" className="tutorial-skip-button" onClick={() => closeTutorial(true)}>
-                跳過教學
-              </button>
+            <div className={`tutorial-actions${isFinalTutorialStep ? ' single-action' : ''}`}>
+              {!isFinalTutorialStep && (
+                <button type="button" className="tutorial-skip-button" onClick={() => closeTutorial(true)}>
+                  跳過教學
+                </button>
+              )}
               <button
                 type="button"
                 className="submit-button tutorial-next-button"
@@ -3925,6 +4018,21 @@ function App() {
                 {tutorialStepIndex >= tutorialSteps.length - 1 ? '完成' : '下一步'}
               </button>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {isJudgeTutorialNoticeOpen && createPortal(
+        <div className="judge-tutorial-notice-backdrop" role="dialog" aria-modal="true" aria-label="評審完成教學提醒">
+          <div className="judge-tutorial-notice-modal">
+            <h3>提醒</h3>
+            <p>
+              若操作上有任何問題，都可以找現場工作人員協助。若已鎖定上傳後仍需修改，也可以請工作人員協助解鎖。請好好享受本屆專題發表會吧！
+            </p>
+            <button type="button" onClick={() => setIsJudgeTutorialNoticeOpen(false)}>
+              關閉
+            </button>
           </div>
         </div>,
         document.body
